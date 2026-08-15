@@ -131,7 +131,10 @@ goto :resultado
 
 :sem_inferencia
 echo [INFO] Teste de inferencia ignorado.
-echo        Para testar: set OLLAMA_MODEL=qwen3:4b ^&^& Testar-Ollama-Local.cmd
+echo        Para testar (Prompt de Comando / cmd.exe):
+echo          set OLLAMA_MODEL=qwen3:4b ^&^& scripts\Testar-Ollama-Local.cmd
+echo        Para testar (PowerShell):
+echo          $env:OLLAMA_MODEL="qwen3:4b"; cmd /c scripts\Testar-Ollama-Local.cmd
 
 :resultado
 echo.
