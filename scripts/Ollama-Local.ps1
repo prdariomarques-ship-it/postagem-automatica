@@ -9,16 +9,17 @@ Add-Type -AssemblyName System.Drawing
 
 # ── Constantes ────────────────────────────────────────────────────────────
 
-$OLLAMA_HOST     = "http://127.0.0.1:11434"
-$COR_VERDE_BTN   = [System.Drawing.Color]::FromArgb(25, 100, 68)
-$COR_LARANJA_BTN = [System.Drawing.Color]::FromArgb(195, 100, 10)
-$COR_SAIDA       = [System.Drawing.Color]::FromArgb(0, 128, 0)
-$COR_BRANCO      = [System.Drawing.Color]::White
-$COR_CINZA_BORDA = [System.Drawing.Color]::FromArgb(180, 180, 180)
-$FONTE_TITULO    = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Regular)
-$FONTE_LABEL     = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
-$FONTE_MONO      = New-Object System.Drawing.Font("Consolas",  9, [System.Drawing.FontStyle]::Regular)
-$FONTE_BTN       = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
+$OLLAMA_HOST      = "http://127.0.0.1:11434"
+$COR_VERDE_BTN    = [System.Drawing.Color]::FromArgb(25, 100, 68)
+$COR_LARANJA_BTN  = [System.Drawing.Color]::FromArgb(195, 100, 10)
+$COR_VERMELHO_BTN = [System.Drawing.Color]::FromArgb(180, 50, 30)
+$COR_SAIDA        = [System.Drawing.Color]::FromArgb(0, 128, 0)
+$COR_BRANCO       = [System.Drawing.Color]::White
+$COR_CINZA_BORDA  = [System.Drawing.Color]::FromArgb(180, 180, 180)
+$FONTE_TITULO     = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Regular)
+$FONTE_LABEL      = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
+$FONTE_MONO       = New-Object System.Drawing.Font("Consolas",  9, [System.Drawing.FontStyle]::Regular)
+$FONTE_BTN        = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
 
 # ── Formulário ────────────────────────────────────────────────────────────
 
@@ -48,14 +49,15 @@ $lblModelo.Location = New-Object System.Drawing.Point(16, 58)
 $lblModelo.AutoSize = $true
 $form.Controls.Add($lblModelo)
 
-$cmbModelo                = New-Object System.Windows.Forms.ComboBox
-$cmbModelo.Location       = New-Object System.Drawing.Point(108, 55)
-$cmbModelo.Size           = New-Object System.Drawing.Size(210, 25)
-$cmbModelo.DropDownStyle  = "DropDownList"
-$cmbModelo.Anchor         = "Top, Left"
+$cmbModelo               = New-Object System.Windows.Forms.ComboBox
+$cmbModelo.Location      = New-Object System.Drawing.Point(108, 55)
+$cmbModelo.Size          = New-Object System.Drawing.Size(210, 25)
+$cmbModelo.DropDownStyle = "DropDownList"
+$cmbModelo.Anchor        = "Top, Left"
 $form.Controls.Add($cmbModelo)
 
-# Botões superiores
+# ── Botões superiores ─────────────────────────────────────────────────────
+
 function New-BotaoSuperior($texto, $x, [System.Drawing.Color]$bg, [System.Drawing.Color]$fg) {
     $b = New-Object System.Windows.Forms.Button
     $b.Text      = $texto
@@ -71,9 +73,9 @@ function New-BotaoSuperior($texto, $x, [System.Drawing.Color]$bg, [System.Drawin
     return $b
 }
 
-$btnAtualizar = New-BotaoSuperior "Atualizar modelos" 328 $COR_BRANCO ([System.Drawing.Color]::Black)
-$btnStatus    = New-BotaoSuperior "Ver status"        472 $COR_BRANCO ([System.Drawing.Color]::Black)
-$btnLiberar   = New-BotaoSuperior "Liberar VRAM"      562 $COR_LARANJA_BTN $COR_BRANCO
+$btnAtualizar = New-BotaoSuperior "Atualizar modelos"  328 $COR_BRANCO ([System.Drawing.Color]::Black)
+$btnStatus    = New-BotaoSuperior "Ver status"         472 $COR_BRANCO ([System.Drawing.Color]::Black)
+$btnLiberar   = New-BotaoSuperior "Liberar VRAM"       562 $COR_LARANJA_BTN $COR_BRANCO
 $btnGGUF      = New-BotaoSuperior "Importar GGUF local" 670 $COR_BRANCO ([System.Drawing.Color]::Black)
 
 foreach ($b in @($btnAtualizar, $btnStatus, $btnLiberar, $btnGGUF)) {
@@ -82,27 +84,27 @@ foreach ($b in @($btnAtualizar, $btnStatus, $btnLiberar, $btnGGUF)) {
 
 # ── Área de saída ─────────────────────────────────────────────────────────
 
-$txtSaida              = New-Object System.Windows.Forms.RichTextBox
-$txtSaida.Location     = New-Object System.Drawing.Point(16, 90)
-$txtSaida.Size         = New-Object System.Drawing.Size(938, 400)
-$txtSaida.Anchor       = "Top, Left, Right, Bottom"
-$txtSaida.ReadOnly     = $true
-$txtSaida.BackColor    = $COR_BRANCO
-$txtSaida.ForeColor    = $COR_SAIDA
-$txtSaida.Font         = $FONTE_MONO
-$txtSaida.BorderStyle  = "FixedSingle"
-$txtSaida.ScrollBars   = "Vertical"
-$txtSaida.DetectUrls   = $false
+$txtSaida             = New-Object System.Windows.Forms.RichTextBox
+$txtSaida.Location    = New-Object System.Drawing.Point(16, 90)
+$txtSaida.Size        = New-Object System.Drawing.Size(938, 400)
+$txtSaida.Anchor      = "Top, Left, Right, Bottom"
+$txtSaida.ReadOnly    = $true
+$txtSaida.BackColor   = $COR_BRANCO
+$txtSaida.ForeColor   = $COR_SAIDA
+$txtSaida.Font        = $FONTE_MONO
+$txtSaida.BorderStyle = "FixedSingle"
+$txtSaida.ScrollBars  = "Vertical"
+$txtSaida.DetectUrls  = $false
 $form.Controls.Add($txtSaida)
 
 # ── Status de memória ─────────────────────────────────────────────────────
 
-$lblMemoria          = New-Object System.Windows.Forms.Label
-$lblMemoria.Text     = "Nenhum modelo carregado na memória."
-$lblMemoria.ForeColor= [System.Drawing.Color]::Green
-$lblMemoria.Location = New-Object System.Drawing.Point(16, 498)
-$lblMemoria.AutoSize = $true
-$lblMemoria.Anchor   = "Bottom, Left"
+$lblMemoria           = New-Object System.Windows.Forms.Label
+$lblMemoria.Text      = "Nenhum modelo carregado na memória."
+$lblMemoria.ForeColor = [System.Drawing.Color]::Green
+$lblMemoria.Location  = New-Object System.Drawing.Point(16, 498)
+$lblMemoria.AutoSize  = $true
+$lblMemoria.Anchor    = "Bottom, Left"
 $form.Controls.Add($lblMemoria)
 
 # ── Área de entrada ───────────────────────────────────────────────────────
@@ -119,39 +121,65 @@ $form.Controls.Add($txtInput)
 
 # ── Botões inferiores ─────────────────────────────────────────────────────
 
-$btnEnviar              = New-Object System.Windows.Forms.Button
-$btnEnviar.Text         = "Enviar ao modelo local"
-$btnEnviar.Location     = New-Object System.Drawing.Point(16, 590)
-$btnEnviar.Size         = New-Object System.Drawing.Size(180, 36)
-$btnEnviar.Font         = $FONTE_BTN
-$btnEnviar.FlatStyle    = "Flat"
-$btnEnviar.BackColor    = $COR_VERDE_BTN
-$btnEnviar.ForeColor    = $COR_BRANCO
-$btnEnviar.FlatAppearance.BorderSize  = 0
-$btnEnviar.Cursor       = [System.Windows.Forms.Cursors]::Hand
-$btnEnviar.Anchor       = "Bottom, Left"
+$btnEnviar                        = New-Object System.Windows.Forms.Button
+$btnEnviar.Text                   = "Enviar ao modelo local"
+$btnEnviar.Location               = New-Object System.Drawing.Point(16, 590)
+$btnEnviar.Size                   = New-Object System.Drawing.Size(180, 36)
+$btnEnviar.Font                   = $FONTE_BTN
+$btnEnviar.FlatStyle              = "Flat"
+$btnEnviar.BackColor              = $COR_VERDE_BTN
+$btnEnviar.ForeColor              = $COR_BRANCO
+$btnEnviar.FlatAppearance.BorderSize = 0
+$btnEnviar.Cursor                 = [System.Windows.Forms.Cursors]::Hand
+$btnEnviar.Anchor                 = "Bottom, Left"
 $form.Controls.Add($btnEnviar)
 
-$btnLimpar              = New-Object System.Windows.Forms.Button
-$btnLimpar.Text         = "Limpar conversa"
-$btnLimpar.Location     = New-Object System.Drawing.Point(204, 590)
-$btnLimpar.AutoSize     = $true
-$btnLimpar.Padding      = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
-$btnLimpar.Font         = $FONTE_BTN
-$btnLimpar.FlatStyle    = "Flat"
-$btnLimpar.BackColor    = $COR_BRANCO
+# Cancelar fica invisível até o envio ser disparado
+$btnCancelar                        = New-Object System.Windows.Forms.Button
+$btnCancelar.Text                   = "Cancelar"
+$btnCancelar.Location               = New-Object System.Drawing.Point(204, 590)
+$btnCancelar.Size                   = New-Object System.Drawing.Size(88, 36)
+$btnCancelar.Font                   = $FONTE_BTN
+$btnCancelar.FlatStyle              = "Flat"
+$btnCancelar.BackColor              = $COR_VERMELHO_BTN
+$btnCancelar.ForeColor              = $COR_BRANCO
+$btnCancelar.FlatAppearance.BorderSize = 0
+$btnCancelar.Cursor                 = [System.Windows.Forms.Cursors]::Hand
+$btnCancelar.Anchor                 = "Bottom, Left"
+$btnCancelar.Visible                = $false
+$form.Controls.Add($btnCancelar)
+
+$btnLimpar                        = New-Object System.Windows.Forms.Button
+$btnLimpar.Text                   = "Limpar conversa"
+$btnLimpar.Location               = New-Object System.Drawing.Point(300, 590)
+$btnLimpar.AutoSize               = $true
+$btnLimpar.Padding                = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
+$btnLimpar.Font                   = $FONTE_BTN
+$btnLimpar.FlatStyle              = "Flat"
+$btnLimpar.BackColor              = $COR_BRANCO
 $btnLimpar.FlatAppearance.BorderColor = $COR_CINZA_BORDA
-$btnLimpar.Cursor       = [System.Windows.Forms.Cursors]::Hand
-$btnLimpar.Anchor       = "Bottom, Left"
+$btnLimpar.Cursor                 = [System.Windows.Forms.Cursors]::Hand
+$btnLimpar.Anchor                 = "Bottom, Left"
 $form.Controls.Add($btnLimpar)
 
 $lblErro              = New-Object System.Windows.Forms.Label
 $lblErro.Text         = ""
 $lblErro.ForeColor    = [System.Drawing.Color]::Red
-$lblErro.Location     = New-Object System.Drawing.Point(350, 600)
+$lblErro.Location     = New-Object System.Drawing.Point(460, 600)
 $lblErro.AutoSize     = $true
 $lblErro.Anchor       = "Bottom, Left"
 $form.Controls.Add($lblErro)
+
+# ── Estado assíncrono ─────────────────────────────────────────────────────
+
+$script:AsyncJob    = $null
+$script:AsyncRS     = $null
+$script:AsyncModelo = ""
+
+# Timer de 300 ms — verifica no thread da UI se a requisição HTTP terminou.
+# Não bloqueia o WinForms message loop.
+$pollingTimer          = New-Object System.Windows.Forms.Timer
+$pollingTimer.Interval = 300
 
 # ── Funções auxiliares ────────────────────────────────────────────────────
 
@@ -167,8 +195,7 @@ function Escrever-Saida([string]$texto, [System.Drawing.Color]$cor) {
 
 function Atualizar-StatusMemoria {
     try {
-        $ps = ollama ps 2>$null | Select-Object -Skip 1 |
-            Where-Object { $_.Trim() -ne "" }
+        $ps = ollama ps 2>$null | Select-Object -Skip 1 | Where-Object { $_.Trim() -ne "" }
         if ($ps) {
             $nomes = ($ps | ForEach-Object { ($_ -split '\s+')[0] }) -join ", "
             $lblMemoria.Text      = "Na memória: $nomes"
@@ -185,8 +212,7 @@ function Atualizar-StatusMemoria {
 function Atualizar-Modelos {
     $cmbModelo.Items.Clear()
     try {
-        $lista = ollama list 2>$null | Select-Object -Skip 1 |
-            Where-Object { $_.Trim() -ne "" }
+        $lista = ollama list 2>$null | Select-Object -Skip 1 | Where-Object { $_.Trim() -ne "" }
         foreach ($linha in $lista) {
             $nome = ($linha -split '\s+')[0]
             if ($nome -and $nome -notmatch ":cloud|-cloud") {
@@ -214,7 +240,56 @@ function Testar-Servico {
     } catch { return $false }
 }
 
+function Finalizar-Async {
+    $pollingTimer.Stop()
+    if ($script:AsyncRS) {
+        try { $script:AsyncRS.Stop()    } catch {}
+        try { $script:AsyncRS.Dispose() } catch {}
+        $script:AsyncRS = $null
+    }
+    $script:AsyncJob    = $null
+    $script:AsyncModelo = ""
+    $btnEnviar.Enabled  = $true
+    $btnCancelar.Visible = $false
+    Atualizar-StatusMemoria
+}
+
+# ── Timer de polling ──────────────────────────────────────────────────────
+
+$pollingTimer.Add_Tick({
+    if (-not $script:AsyncJob -or -not $script:AsyncRS) { $pollingTimer.Stop(); return }
+    if (-not $script:AsyncJob.IsCompleted) { return }
+
+    try {
+        $resultado = $script:AsyncRS.EndInvoke($script:AsyncJob)
+        if ($resultado -and $resultado.Count -gt 0) {
+            $r = $resultado[0]
+            if ($r.ok) {
+                Escrever-Saida "$($script:AsyncModelo): $($r.text)" $COR_SAIDA
+                $lblErro.Text      = ""
+                $lblErro.ForeColor = [System.Drawing.Color]::Red
+            } else {
+                $lblErro.Text = if ($r.error -match "not found") {
+                    "Modelo '$($script:AsyncModelo)' não encontrado. Execute: ollama pull $($script:AsyncModelo)"
+                } else { "Erro: $($r.error)" }
+                $lblErro.ForeColor = [System.Drawing.Color]::Red
+            }
+        }
+    } catch {
+        $lblErro.Text      = "Erro interno: $_"
+        $lblErro.ForeColor = [System.Drawing.Color]::Red
+    } finally {
+        Finalizar-Async
+    }
+})
+
 # ── Eventos ───────────────────────────────────────────────────────────────
+
+$btnCancelar.Add_Click({
+    Escrever-Saida "[Requisição cancelada pelo usuário.]" ([System.Drawing.Color]::DarkGray)
+    $lblErro.Text = ""
+    Finalizar-Async
+})
 
 $btnAtualizar.Add_Click({
     Escrever-Saida "[Atualizando lista de modelos...]" ([System.Drawing.Color]::DarkGray)
@@ -249,7 +324,6 @@ $btnLiberar.Add_Click({
             if ($LASTEXITCODE -eq 0) {
                 Escrever-Saida "  ✔ $m removido da VRAM." $COR_SAIDA
             } else {
-                # Fallback via API
                 $body = (@{ model = $m; keep_alive = "0" } | ConvertTo-Json -Compress)
                 try {
                     Invoke-RestMethod -Uri "$OLLAMA_HOST/api/generate" -Method POST `
@@ -275,23 +349,23 @@ $btnGGUF.Add_Click({
     Escrever-Saida "[GGUF selecionado: $($info.Name) — $([math]::Round($info.Length/1GB,2)) GB]" ([System.Drawing.Color]::DarkGray)
 
     $nomeForm = New-Object System.Windows.Forms.Form
-    $nomeForm.Text        = "Nome do modelo"
-    $nomeForm.ClientSize  = New-Object System.Drawing.Size(360, 110)
-    $nomeForm.StartPosition = "CenterParent"
-    $nomeForm.FormBorderStyle = "FixedDialog"
+    $nomeForm.Text             = "Nome do modelo"
+    $nomeForm.ClientSize       = New-Object System.Drawing.Size(360, 110)
+    $nomeForm.StartPosition    = "CenterParent"
+    $nomeForm.FormBorderStyle  = "FixedDialog"
 
-    $nomeLabel = New-Object System.Windows.Forms.Label
+    $nomeLabel          = New-Object System.Windows.Forms.Label
     $nomeLabel.Text     = "Nome local (ex: meu-modelo:q4):"
     $nomeLabel.Location = New-Object System.Drawing.Point(12, 14)
     $nomeLabel.AutoSize = $true
     $nomeForm.Controls.Add($nomeLabel)
 
-    $nomeInput = New-Object System.Windows.Forms.TextBox
+    $nomeInput          = New-Object System.Windows.Forms.TextBox
     $nomeInput.Location = New-Object System.Drawing.Point(12, 36)
     $nomeInput.Size     = New-Object System.Drawing.Size(330, 25)
     $nomeForm.Controls.Add($nomeInput)
 
-    $nomeOk = New-Object System.Windows.Forms.Button
+    $nomeOk              = New-Object System.Windows.Forms.Button
     $nomeOk.Text         = "Criar modelo"
     $nomeOk.Location     = New-Object System.Drawing.Point(12, 70)
     $nomeOk.DialogResult = "OK"
@@ -303,12 +377,14 @@ $btnGGUF.Add_Click({
 
     if ($nomeForm.ShowDialog($form) -ne "OK") { return }
     $localName = $nomeInput.Text.Trim()
-    if (-not $localName) { Escrever-Saida "  Nome não informado. Cancelado." ([System.Drawing.Color]::Gray); return }
+    if (-not $localName) {
+        Escrever-Saida "  Nome não informado. Cancelado." ([System.Drawing.Color]::Gray); return
+    }
     if ($localName -match ":cloud|-cloud") {
         Escrever-Saida "  ✖ Nome não pode conter ':cloud' ou '-cloud'." ([System.Drawing.Color]::Red); return
     }
 
-    Escrever-Saida "[Criando modelo '$localName'... Aguarde.]" ([System.Drawing.Color]::DarkGray)
+    Escrever-Saida "[Criando modelo '$localName'... Aguarde — pode demorar alguns minutos.]" ([System.Drawing.Color]::DarkGray)
     [System.Windows.Forms.Application]::DoEvents()
 
     $tempFile = [System.IO.Path]::GetTempFileName()
@@ -326,6 +402,12 @@ $btnGGUF.Add_Click({
         Remove-Item $tempFile -ErrorAction SilentlyContinue
     }
 })
+
+# ── Enviar (assíncrono via Runspace + Timer) ──────────────────────────────
+#
+# O Invoke-RestMethod NÃO é executado no thread da UI. Um Runspace separado
+# faz a chamada HTTP; o pollingTimer verifica a conclusão a cada 300 ms sem
+# bloquear o message loop do WinForms.
 
 $Enviar = {
     $lblErro.Text = ""
@@ -345,61 +427,61 @@ $Enviar = {
     }
 
     Escrever-Saida "Você: $prompt" ([System.Drawing.Color]::FromArgb(0, 90, 160))
-    $txtInput.Text    = ""
-    $btnEnviar.Enabled = $false
-    $lblErro.Text     = "Aguardando resposta..."
-    $lblErro.ForeColor = [System.Drawing.Color]::DarkGray
+    $txtInput.Text       = ""
+    $btnEnviar.Enabled   = $false
+    $btnCancelar.Visible = $true
+    $lblErro.Text        = "Gerando resposta..."
+    $lblErro.ForeColor   = [System.Drawing.Color]::DarkGray
     [System.Windows.Forms.Application]::DoEvents()
 
     $ctxLen = if ($env:OLLAMA_CONTEXT_LENGTH) { [int]$env:OLLAMA_CONTEXT_LENGTH } else { 4096 }
-    $body = @{
+    $bodyJson = @{
         model   = $modelo
         prompt  = $prompt
         stream  = $false
         options = @{ num_ctx = $ctxLen }
     } | ConvertTo-Json -Compress
 
-    try {
-        $resp = Invoke-RestMethod -Uri "$OLLAMA_HOST/api/generate" `
-            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 180
-        $texto = $resp.response.Trim()
-        Escrever-Saida "$modelo`: $texto" $COR_SAIDA
-        $lblErro.Text     = ""
-        $lblErro.ForeColor = [System.Drawing.Color]::Red
-    } catch {
-        # Tentar ler o corpo JSON da resposta Ollama (PS 7+ e PS 5.1)
-        $errMsg = ""
-        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+    $capturedHost  = $OLLAMA_HOST
+    $capturedBody  = $bodyJson
+    $script:AsyncModelo = $modelo
+
+    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
+    $rs.Open()
+    $ps = [System.Management.Automation.PowerShell]::Create()
+    $ps.Runspace = $rs
+
+    [void]$ps.AddScript({
+        param($h, $b)
+        try {
+            $r = Invoke-RestMethod -Uri "$h/api/generate" `
+                -Method POST -Body $b -ContentType "application/json" -TimeoutSec 300
+            return @{ ok = $true; text = [string]$r.response.Trim(); error = "" }
+        } catch {
+            $errMsg = [string]$_
             try {
-                $j = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
-                if ($j.error) { $errMsg = $j.error }
+                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+                    $j = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($j.error) { $errMsg = [string]$j.error }
+                } elseif ($_.Exception.Response) {
+                    $st = $_.Exception.Response.GetResponseStream()
+                    $rd = New-Object System.IO.StreamReader($st)
+                    $jt = $rd.ReadToEnd(); $rd.Close()
+                    $j  = $jt | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($j -and $j.error) { $errMsg = [string]$j.error }
+                }
             } catch {}
+            return @{ ok = $false; text = ""; error = $errMsg }
         }
-        if (-not $errMsg -and $_.Exception.Response) {
-            try {
-                $st = $_.Exception.Response.GetResponseStream()
-                $rd = New-Object System.IO.StreamReader($st)
-                $jt = $rd.ReadToEnd(); $rd.Close()
-                $j  = $jt | ConvertFrom-Json -ErrorAction SilentlyContinue
-                if ($j -and $j.error) { $errMsg = $j.error }
-            } catch {}
-        }
-        if (-not $errMsg) { $errMsg = "$_" }
-        $lblErro.Text = if ($errMsg -match "not found|não encontrado") {
-            "Modelo '$modelo' não encontrado. Execute: ollama pull $modelo"
-        } else {
-            "Erro: $errMsg"
-        }
-        $lblErro.ForeColor = [System.Drawing.Color]::Red
-    } finally {
-        $btnEnviar.Enabled = $true
-        Atualizar-StatusMemoria
-    }
+    }).AddArgument($capturedHost).AddArgument($capturedBody) | Out-Null
+
+    $script:AsyncRS  = $ps
+    $script:AsyncJob = $ps.BeginInvoke()
+    $pollingTimer.Start()
 }
 
 $btnEnviar.Add_Click($Enviar)
 
-# Ctrl+Enter envia
 $txtInput.Add_KeyDown({
     if ($_.Control -and $_.KeyCode -eq "Return") {
         $_.SuppressKeyPress = $true
@@ -423,6 +505,14 @@ $form.Add_Shown({
         Atualizar-Modelos
     }
     $txtInput.Focus()
+})
+
+$form.Add_FormClosing({
+    $pollingTimer.Stop()
+    if ($script:AsyncRS) {
+        try { $script:AsyncRS.Stop()    } catch {}
+        try { $script:AsyncRS.Dispose() } catch {}
+    }
 })
 
 [void]$form.ShowDialog()
