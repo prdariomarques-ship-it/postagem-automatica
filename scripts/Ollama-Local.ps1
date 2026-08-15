@@ -1,268 +1,405 @@
-# Ollama-Local.ps1 — Interface portátil para Ollama local (Windows)
-# Usa exclusivamente http://127.0.0.1:11434. Sem nuvem, sem chaves de API.
-# Abra via Abrir-Ollama-Local.cmd ou: PowerShell -ExecutionPolicy Bypass -File Ollama-Local.ps1
+# Ollama-Local.ps1 — Interface gráfica portátil para Ollama local (Windows)
+# Usa exclusivamente http://127.0.0.1:11434. Sem nuvem. Sem chaves de API.
+# Execute via Abrir-Ollama-Local.cmd ou:
+#   PowerShell -ExecutionPolicy Bypass -File Ollama-Local.ps1
 
-$ErrorActionPreference = "SilentlyContinue"
-$OLLAMA_HOST = "http://127.0.0.1:11434"
-$script:ModeloAtual = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "" }
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
 
-# ── Funções de saída ──────────────────────────────────────────────────────
+# ── Constantes ────────────────────────────────────────────────────────────
 
-function Write-Sep  { Write-Host ("═" * 51) -ForegroundColor Cyan }
-function Write-Info { param($m) Write-Host "  → $m" -ForegroundColor Cyan }
-function Write-Ok   { param($m) Write-Host "  ✔ $m" -ForegroundColor Green }
-function Write-Warn { param($m) Write-Host "  ⚠ $m" -ForegroundColor Yellow }
-function Write-Err  { param($m) Write-Host "  ✖ $m" -ForegroundColor Red }
+$OLLAMA_HOST     = "http://127.0.0.1:11434"
+$COR_VERDE_BTN   = [System.Drawing.Color]::FromArgb(25, 100, 68)
+$COR_LARANJA_BTN = [System.Drawing.Color]::FromArgb(195, 100, 10)
+$COR_SAIDA       = [System.Drawing.Color]::FromArgb(0, 128, 0)
+$COR_BRANCO      = [System.Drawing.Color]::White
+$COR_CINZA_BORDA = [System.Drawing.Color]::FromArgb(180, 180, 180)
+$FONTE_TITULO    = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Regular)
+$FONTE_LABEL     = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
+$FONTE_MONO      = New-Object System.Drawing.Font("Consolas",  9, [System.Drawing.FontStyle]::Regular)
+$FONTE_BTN       = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
 
-# ── Verificar serviço ─────────────────────────────────────────────────────
+# ── Formulário ────────────────────────────────────────────────────────────
 
-function Test-OllamaOnline {
+$form = New-Object System.Windows.Forms.Form
+$form.Text            = "Ollama Local — Windows 11"
+$form.ClientSize      = New-Object System.Drawing.Size(970, 660)
+$form.MinimumSize     = New-Object System.Drawing.Size(780, 520)
+$form.StartPosition   = "CenterScreen"
+$form.BackColor       = $COR_BRANCO
+$form.Font            = $FONTE_LABEL
+
+# ── Título ────────────────────────────────────────────────────────────────
+
+$lblTitulo          = New-Object System.Windows.Forms.Label
+$lblTitulo.Text     = "Ollama Local"
+$lblTitulo.Font     = $FONTE_TITULO
+$lblTitulo.Location = New-Object System.Drawing.Point(16, 12)
+$lblTitulo.AutoSize = $true
+$form.Controls.Add($lblTitulo)
+
+# ── Linha de modelo ───────────────────────────────────────────────────────
+
+$lblModelo          = New-Object System.Windows.Forms.Label
+$lblModelo.Text     = "Modelo local:"
+$lblModelo.ForeColor= [System.Drawing.Color]::FromArgb(200, 80, 0)
+$lblModelo.Location = New-Object System.Drawing.Point(16, 58)
+$lblModelo.AutoSize = $true
+$form.Controls.Add($lblModelo)
+
+$cmbModelo                = New-Object System.Windows.Forms.ComboBox
+$cmbModelo.Location       = New-Object System.Drawing.Point(108, 55)
+$cmbModelo.Size           = New-Object System.Drawing.Size(210, 25)
+$cmbModelo.DropDownStyle  = "DropDownList"
+$cmbModelo.Anchor         = "Top, Left"
+$form.Controls.Add($cmbModelo)
+
+# Botões superiores
+function New-BotaoSuperior($texto, $x, [System.Drawing.Color]$bg, [System.Drawing.Color]$fg) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text      = $texto
+    $b.Location  = New-Object System.Drawing.Point($x, 53)
+    $b.AutoSize  = $true
+    $b.Padding   = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
+    $b.Font      = $FONTE_BTN
+    $b.FlatStyle = "Flat"
+    $b.BackColor = $bg
+    $b.ForeColor = $fg
+    $b.FlatAppearance.BorderColor = $COR_CINZA_BORDA
+    $b.Cursor    = [System.Windows.Forms.Cursors]::Hand
+    return $b
+}
+
+$btnAtualizar = New-BotaoSuperior "Atualizar modelos" 328 $COR_BRANCO ([System.Drawing.Color]::Black)
+$btnStatus    = New-BotaoSuperior "Ver status"        472 $COR_BRANCO ([System.Drawing.Color]::Black)
+$btnLiberar   = New-BotaoSuperior "Liberar VRAM"      562 $COR_LARANJA_BTN $COR_BRANCO
+$btnGGUF      = New-BotaoSuperior "Importar GGUF local" 670 $COR_BRANCO ([System.Drawing.Color]::Black)
+
+foreach ($b in @($btnAtualizar, $btnStatus, $btnLiberar, $btnGGUF)) {
+    $form.Controls.Add($b)
+}
+
+# ── Área de saída ─────────────────────────────────────────────────────────
+
+$txtSaida              = New-Object System.Windows.Forms.RichTextBox
+$txtSaida.Location     = New-Object System.Drawing.Point(16, 90)
+$txtSaida.Size         = New-Object System.Drawing.Size(938, 400)
+$txtSaida.Anchor       = "Top, Left, Right, Bottom"
+$txtSaida.ReadOnly     = $true
+$txtSaida.BackColor    = $COR_BRANCO
+$txtSaida.ForeColor    = $COR_SAIDA
+$txtSaida.Font         = $FONTE_MONO
+$txtSaida.BorderStyle  = "FixedSingle"
+$txtSaida.ScrollBars   = "Vertical"
+$txtSaida.DetectUrls   = $false
+$form.Controls.Add($txtSaida)
+
+# ── Status de memória ─────────────────────────────────────────────────────
+
+$lblMemoria          = New-Object System.Windows.Forms.Label
+$lblMemoria.Text     = "Nenhum modelo carregado na memória."
+$lblMemoria.ForeColor= [System.Drawing.Color]::Green
+$lblMemoria.Location = New-Object System.Drawing.Point(16, 498)
+$lblMemoria.AutoSize = $true
+$lblMemoria.Anchor   = "Bottom, Left"
+$form.Controls.Add($lblMemoria)
+
+# ── Área de entrada ───────────────────────────────────────────────────────
+
+$txtInput             = New-Object System.Windows.Forms.TextBox
+$txtInput.Location    = New-Object System.Drawing.Point(16, 518)
+$txtInput.Size        = New-Object System.Drawing.Size(938, 64)
+$txtInput.Multiline   = $true
+$txtInput.ScrollBars  = "Vertical"
+$txtInput.Font        = $FONTE_LABEL
+$txtInput.BorderStyle = "FixedSingle"
+$txtInput.Anchor      = "Bottom, Left, Right"
+$form.Controls.Add($txtInput)
+
+# ── Botões inferiores ─────────────────────────────────────────────────────
+
+$btnEnviar              = New-Object System.Windows.Forms.Button
+$btnEnviar.Text         = "Enviar ao modelo local"
+$btnEnviar.Location     = New-Object System.Drawing.Point(16, 590)
+$btnEnviar.Size         = New-Object System.Drawing.Size(180, 36)
+$btnEnviar.Font         = $FONTE_BTN
+$btnEnviar.FlatStyle    = "Flat"
+$btnEnviar.BackColor    = $COR_VERDE_BTN
+$btnEnviar.ForeColor    = $COR_BRANCO
+$btnEnviar.FlatAppearance.BorderSize  = 0
+$btnEnviar.Cursor       = [System.Windows.Forms.Cursors]::Hand
+$btnEnviar.Anchor       = "Bottom, Left"
+$form.Controls.Add($btnEnviar)
+
+$btnLimpar              = New-Object System.Windows.Forms.Button
+$btnLimpar.Text         = "Limpar conversa"
+$btnLimpar.Location     = New-Object System.Drawing.Point(204, 590)
+$btnLimpar.AutoSize     = $true
+$btnLimpar.Padding      = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
+$btnLimpar.Font         = $FONTE_BTN
+$btnLimpar.FlatStyle    = "Flat"
+$btnLimpar.BackColor    = $COR_BRANCO
+$btnLimpar.FlatAppearance.BorderColor = $COR_CINZA_BORDA
+$btnLimpar.Cursor       = [System.Windows.Forms.Cursors]::Hand
+$btnLimpar.Anchor       = "Bottom, Left"
+$form.Controls.Add($btnLimpar)
+
+$lblErro              = New-Object System.Windows.Forms.Label
+$lblErro.Text         = ""
+$lblErro.ForeColor    = [System.Drawing.Color]::Red
+$lblErro.Location     = New-Object System.Drawing.Point(350, 600)
+$lblErro.AutoSize     = $true
+$lblErro.Anchor       = "Bottom, Left"
+$form.Controls.Add($lblErro)
+
+# ── Funções auxiliares ────────────────────────────────────────────────────
+
+function Escrever-Saida([string]$texto, [System.Drawing.Color]$cor) {
+    $txtSaida.SelectionStart  = $txtSaida.TextLength
+    $txtSaida.SelectionLength = 0
+    $txtSaida.SelectionColor  = $cor
+    $txtSaida.AppendText($texto + "`n")
+    $txtSaida.SelectionColor  = $COR_SAIDA
+    $txtSaida.ScrollToCaret()
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Atualizar-StatusMemoria {
+    try {
+        $ps = ollama ps 2>$null | Select-Object -Skip 1 |
+            Where-Object { $_.Trim() -ne "" }
+        if ($ps) {
+            $nomes = ($ps | ForEach-Object { ($_ -split '\s+')[0] }) -join ", "
+            $lblMemoria.Text      = "Na memória: $nomes"
+            $lblMemoria.ForeColor = [System.Drawing.Color]::DarkGreen
+        } else {
+            $lblMemoria.Text      = "Nenhum modelo carregado na memória."
+            $lblMemoria.ForeColor = [System.Drawing.Color]::Green
+        }
+    } catch {
+        $lblMemoria.Text = "Não foi possível verificar ollama ps."
+    }
+}
+
+function Atualizar-Modelos {
+    $cmbModelo.Items.Clear()
+    try {
+        $lista = ollama list 2>$null | Select-Object -Skip 1 |
+            Where-Object { $_.Trim() -ne "" }
+        foreach ($linha in $lista) {
+            $nome = ($linha -split '\s+')[0]
+            if ($nome -and $nome -notmatch ":cloud|-cloud") {
+                [void]$cmbModelo.Items.Add($nome)
+            }
+        }
+        if ($cmbModelo.Items.Count -gt 0) {
+            $preDefinido = $env:OLLAMA_MODEL
+            $idx = if ($preDefinido) { $cmbModelo.Items.IndexOf($preDefinido) } else { -1 }
+            $cmbModelo.SelectedIndex = if ($idx -ge 0) { $idx } else { 0 }
+            Escrever-Saida "[$($cmbModelo.Items.Count) modelo(s) carregado(s) na lista.]" ([System.Drawing.Color]::DarkGray)
+        } else {
+            Escrever-Saida "[Nenhum modelo local encontrado. Use: ollama pull qwen3:4b]" ([System.Drawing.Color]::OrangeRed)
+        }
+    } catch {
+        Escrever-Saida "[Erro ao listar modelos: $_]" ([System.Drawing.Color]::Red)
+    }
+    Atualizar-StatusMemoria
+}
+
+function Testar-Servico {
     try {
         $null = Invoke-RestMethod -Uri "$OLLAMA_HOST/api/version" -TimeoutSec 5
         return $true
     } catch { return $false }
 }
 
-# ── Menu principal ────────────────────────────────────────────────────────
+# ── Eventos ───────────────────────────────────────────────────────────────
 
-function Show-Menu {
-    Clear-Host
-    Write-Sep
-    Write-Host "  Ollama Local — Interface Portátil" -ForegroundColor Cyan
-    Write-Host "  $OLLAMA_HOST" -ForegroundColor DarkGray
-    Write-Sep
-    if ($script:ModeloAtual) {
-        Write-Host "  Modelo : $($script:ModeloAtual)" -ForegroundColor Green
+$btnAtualizar.Add_Click({
+    Escrever-Saida "[Atualizando lista de modelos...]" ([System.Drawing.Color]::DarkGray)
+    Atualizar-Modelos
+})
+
+$btnStatus.Add_Click({
+    Escrever-Saida "[ollama ps]" ([System.Drawing.Color]::DarkGray)
+    $saida = ollama ps 2>$null
+    if ($saida) {
+        foreach ($linha in $saida) { Escrever-Saida "  $linha" ([System.Drawing.Color]::DarkCyan) }
     } else {
-        Write-Host "  Modelo : (nenhum selecionado — use [2])" -ForegroundColor Yellow
+        Escrever-Saida "  (nenhum modelo carregado ou serviço offline)" ([System.Drawing.Color]::Gray)
     }
-    Write-Host ""
-    Write-Host "  [1] Enviar prompt" -ForegroundColor White
-    Write-Host "  [2] Selecionar modelo" -ForegroundColor White
-    Write-Host "  [3] Importar GGUF local" -ForegroundColor White
-    Write-Host "  [4] Liberar VRAM" -ForegroundColor White
-    Write-Host "  [5] Diagnóstico (ollama ps)" -ForegroundColor White
-    Write-Host "  [0] Sair" -ForegroundColor DarkGray
-    Write-Sep
-    Write-Host -NoNewline "  Escolha: "
-}
+    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        Escrever-Saida "[GPU nvidia-smi]" ([System.Drawing.Color]::DarkGray)
+        $gpu = nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader 2>$null
+        foreach ($g in $gpu) { Escrever-Saida "  $g" ([System.Drawing.Color]::DarkCyan) }
+    }
+    Atualizar-StatusMemoria
+})
 
-# ── Opção 1: Enviar prompt ────────────────────────────────────────────────
+$btnLiberar.Add_Click({
+    Escrever-Saida "[Liberando VRAM...]" ([System.Drawing.Color]::DarkGray)
+    $modelos = ollama ps 2>$null | Select-Object -Skip 1 |
+        ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ }
+    if (-not $modelos) {
+        Escrever-Saida "  Nenhum modelo estava carregado." ([System.Drawing.Color]::Gray)
+    } else {
+        foreach ($m in $modelos) {
+            ollama stop $m 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Escrever-Saida "  ✔ $m removido da VRAM." $COR_SAIDA
+            } else {
+                # Fallback via API
+                $body = (@{ model = $m; keep_alive = "0" } | ConvertTo-Json -Compress)
+                try {
+                    Invoke-RestMethod -Uri "$OLLAMA_HOST/api/generate" -Method POST `
+                        -Body $body -ContentType "application/json" -TimeoutSec 15 | Out-Null
+                    Escrever-Saida "  ✔ $m descarregado via API." $COR_SAIDA
+                } catch {
+                    Escrever-Saida "  ⚠ Não foi possível parar '$m'." ([System.Drawing.Color]::OrangeRed)
+                }
+            }
+        }
+    }
+    Atualizar-StatusMemoria
+})
 
-function Send-Prompt {
-    if (-not $script:ModeloAtual) {
-        Write-Warn "Nenhum modelo selecionado. Use [2] primeiro."
+$btnGGUF.Add_Click({
+    $dlg = New-Object System.Windows.Forms.OpenFileDialog
+    $dlg.Title  = "Selecione o arquivo GGUF"
+    $dlg.Filter = "Modelos GGUF (*.gguf)|*.gguf|Todos os arquivos (*.*)|*.*"
+    if ($dlg.ShowDialog() -ne "OK") { return }
+    $ggufPath = $dlg.FileName
+
+    $info = Get-Item $ggufPath
+    Escrever-Saida "[GGUF selecionado: $($info.Name) — $([math]::Round($info.Length/1GB,2)) GB]" ([System.Drawing.Color]::DarkGray)
+
+    $nomeForm = New-Object System.Windows.Forms.Form
+    $nomeForm.Text        = "Nome do modelo"
+    $nomeForm.ClientSize  = New-Object System.Drawing.Size(360, 110)
+    $nomeForm.StartPosition = "CenterParent"
+    $nomeForm.FormBorderStyle = "FixedDialog"
+
+    $nomeLabel = New-Object System.Windows.Forms.Label
+    $nomeLabel.Text     = "Nome local (ex: meu-modelo:q4):"
+    $nomeLabel.Location = New-Object System.Drawing.Point(12, 14)
+    $nomeLabel.AutoSize = $true
+    $nomeForm.Controls.Add($nomeLabel)
+
+    $nomeInput = New-Object System.Windows.Forms.TextBox
+    $nomeInput.Location = New-Object System.Drawing.Point(12, 36)
+    $nomeInput.Size     = New-Object System.Drawing.Size(330, 25)
+    $nomeForm.Controls.Add($nomeInput)
+
+    $nomeOk = New-Object System.Windows.Forms.Button
+    $nomeOk.Text         = "Criar modelo"
+    $nomeOk.Location     = New-Object System.Drawing.Point(12, 70)
+    $nomeOk.DialogResult = "OK"
+    $nomeOk.BackColor    = $COR_VERDE_BTN
+    $nomeOk.ForeColor    = $COR_BRANCO
+    $nomeOk.FlatStyle    = "Flat"
+    $nomeForm.Controls.Add($nomeOk)
+    $nomeForm.AcceptButton = $nomeOk
+
+    if ($nomeForm.ShowDialog($form) -ne "OK") { return }
+    $localName = $nomeInput.Text.Trim()
+    if (-not $localName) { Escrever-Saida "  Nome não informado. Cancelado." ([System.Drawing.Color]::Gray); return }
+    if ($localName -match ":cloud|-cloud") {
+        Escrever-Saida "  ✖ Nome não pode conter ':cloud' ou '-cloud'." ([System.Drawing.Color]::Red); return
+    }
+
+    Escrever-Saida "[Criando modelo '$localName'... Aguarde.]" ([System.Drawing.Color]::DarkGray)
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    try {
+        Set-Content -Path $tempFile -Value "FROM $ggufPath" -Encoding UTF8
+        $proc = Start-Process -FilePath "ollama" -ArgumentList "create", $localName, "-f", $tempFile `
+            -Wait -PassThru -WindowStyle Hidden
+        if ($proc.ExitCode -eq 0) {
+            Escrever-Saida "  ✔ Modelo '$localName' criado com sucesso." $COR_SAIDA
+            Atualizar-Modelos
+        } else {
+            Escrever-Saida "  ✖ Falha ao criar modelo (código $($proc.ExitCode))." ([System.Drawing.Color]::Red)
+        }
+    } finally {
+        Remove-Item $tempFile -ErrorAction SilentlyContinue
+    }
+})
+
+$Enviar = {
+    $lblErro.Text = ""
+    $prompt = $txtInput.Text.Trim()
+    if (-not $prompt) {
+        $lblErro.Text = "Escreva uma mensagem antes de enviar."
         return
     }
-    Write-Host ""
-    Write-Host -NoNewline "  Prompt: " -ForegroundColor Cyan
-    $userPrompt = Read-Host
-    if (-not $userPrompt.Trim()) { Write-Warn "Prompt vazio."; return }
+    $modelo = $cmbModelo.SelectedItem
+    if (-not $modelo) {
+        $lblErro.Text = "Selecione um modelo antes de enviar."
+        return
+    }
+    if ($modelo -match ":cloud|-cloud") {
+        $lblErro.Text = "Modelos ':cloud' bloqueados. Escolha um modelo local."
+        return
+    }
 
-    Write-Info "Aguardando resposta de '$($script:ModeloAtual)'..."
+    Escrever-Saida "Você: $prompt" ([System.Drawing.Color]::FromArgb(0, 90, 160))
+    $txtInput.Text    = ""
+    $btnEnviar.Enabled = $false
+    $lblErro.Text     = "Aguardando resposta..."
+    $lblErro.ForeColor = [System.Drawing.Color]::DarkGray
+    [System.Windows.Forms.Application]::DoEvents()
+
     $body = @{
-        model   = $script:ModeloAtual
-        prompt  = $userPrompt
+        model   = $modelo
+        prompt  = $prompt
         stream  = $false
         options = @{ num_ctx = [int]($env:OLLAMA_CONTEXT_LENGTH ?? "4096") }
     } | ConvertTo-Json -Compress
 
     try {
         $resp = Invoke-RestMethod -Uri "$OLLAMA_HOST/api/generate" `
-            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
-        Write-Host ""
-        Write-Host "  ── Resposta ─────────────────────────────────" -ForegroundColor DarkCyan
-        $resp.response.Trim() -split "`n" | ForEach-Object { Write-Host "  $_" }
-        Write-Host "  ─────────────────────────────────────────────" -ForegroundColor DarkCyan
+            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 180
+        $texto = $resp.response.Trim()
+        Escrever-Saida "$modelo`: $texto" $COR_SAIDA
+        $lblErro.Text     = ""
+        $lblErro.ForeColor = [System.Drawing.Color]::Red
     } catch {
-        Write-Err "Erro ao chamar API: $_"
-        Write-Warn "Verifique se o serviço está ativo: ollama serve"
-    }
-}
-
-# ── Opção 2: Selecionar modelo ────────────────────────────────────────────
-
-function Select-Model {
-    Write-Host ""
-    Write-Info "Modelos instalados:"
-    $lista = ollama list 2>$null
-    if (-not $lista) { Write-Warn "Nenhum modelo instalado ou serviço offline."; return }
-
-    $modelos = @()
-    $lista | Select-Object -Skip 1 | ForEach-Object {
-        $nome = ($_ -split '\s+')[0]
-        if ($nome) { $modelos += $nome }
-    }
-
-    if ($modelos.Count -eq 0) { Write-Warn "Nenhum modelo encontrado."; return }
-
-    for ($i = 0; $i -lt $modelos.Count; $i++) {
-        $marca = if ($modelos[$i] -match ":cloud") { " ⚠ cloud" } else { "" }
-        Write-Host ("  [{0}] {1}{2}" -f ($i + 1), $modelos[$i], $marca) -ForegroundColor $(
-            if ($modelos[$i] -match ":cloud") { "Yellow" } else { "White" }
-        )
-    }
-
-    Write-Host -NoNewline "`n  Número do modelo (0 = cancelar): "
-    $escolha = Read-Host
-    if ($escolha -eq "0" -or -not $escolha) { return }
-    $idx = [int]$escolha - 1
-    if ($idx -lt 0 -or $idx -ge $modelos.Count) { Write-Warn "Opção inválida."; return }
-
-    $nome = $modelos[$idx]
-    if ($nome -match ":cloud") {
-        Write-Err "Modelos ':cloud' são bloqueados nesta interface. Escolha outro."
-        return
-    }
-    $script:ModeloAtual = $nome
-    Write-Ok "Modelo selecionado: $($script:ModeloAtual)"
-}
-
-# ── Opção 3: Importar GGUF local ──────────────────────────────────────────
-
-function Import-GGUF {
-    Write-Host ""
-    Write-Warn "Este processo cria um modelo a partir de um arquivo .gguf local."
-    Write-Warn "Pode levar vários minutos dependendo do tamanho do arquivo."
-    Write-Host ""
-    Write-Host -NoNewline "  Caminho completo do arquivo .gguf (0 = cancelar): "
-    $ggufPath = (Read-Host).Trim('"').Trim()
-    if ($ggufPath -eq "0" -or -not $ggufPath) { return }
-
-    if (-not (Test-Path $ggufPath)) {
-        Write-Err "Arquivo não encontrado: $ggufPath"
-        return
-    }
-    if (-not $ggufPath.ToLower().EndsWith(".gguf")) {
-        Write-Err "O arquivo não termina em .gguf. Operação cancelada."
-        return
-    }
-
-    $info = Get-Item $ggufPath
-    Write-Ok "Arquivo encontrado: $($info.Name) ($([math]::Round($info.Length/1GB,2)) GB)"
-
-    Write-Host -NoNewline "  Nome local para o modelo (ex: meu-modelo:q4): "
-    $localName = (Read-Host).Trim()
-    if (-not $localName) { Write-Warn "Nome não informado. Cancelado."; return }
-    if ($localName -match ":cloud|-cloud") {
-        Write-Err "Nome não pode conter ':cloud' ou '-cloud'."
-        return
-    }
-
-    Write-Info "Criando modelo '$localName' a partir de '$($info.Name)'..."
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    try {
-        Set-Content -Path $tempFile -Value "FROM $ggufPath" -Encoding UTF8
-        ollama create $localName -f $tempFile
-        $exitCode = $LASTEXITCODE
+        $lblErro.Text     = "Erro: $_"
+        $lblErro.ForeColor = [System.Drawing.Color]::Red
     } finally {
-        Remove-Item $tempFile -ErrorAction SilentlyContinue
+        $btnEnviar.Enabled = $true
+        Atualizar-StatusMemoria
     }
+}
 
-    if ($exitCode -eq 0) {
-        Write-Ok "Modelo '$localName' criado com sucesso."
-        Write-Info "Verificando com: ollama list"
-        ollama list 2>$null | Select-String $localName | ForEach-Object { Write-Host "  $_" }
+$btnEnviar.Add_Click($Enviar)
+
+# Ctrl+Enter envia
+$txtInput.Add_KeyDown({
+    if ($_.Control -and $_.KeyCode -eq "Return") {
+        $_.SuppressKeyPress = $true
+        & $Enviar
+    }
+})
+
+$btnLimpar.Add_Click({
+    $txtSaida.Clear()
+    Escrever-Saida "Interface local iniciada. Ela só se comunica com o Ollama em $OLLAMA_HOST." ([System.Drawing.Color]::FromArgb(0, 140, 0))
+})
+
+# ── Inicialização ─────────────────────────────────────────────────────────
+
+$form.Add_Shown({
+    Escrever-Saida "Interface local iniciada. Ela só se comunica com o Ollama em $OLLAMA_HOST." ([System.Drawing.Color]::FromArgb(0, 140, 0))
+    if (-not (Testar-Servico)) {
+        Escrever-Saida "⚠ Serviço Ollama não encontrado em $OLLAMA_HOST." ([System.Drawing.Color]::OrangeRed)
+        Escrever-Saida "  Inicie o Ollama e clique em 'Atualizar modelos'." ([System.Drawing.Color]::OrangeRed)
     } else {
-        Write-Err "Falha ao criar modelo (código $exitCode). Verifique o caminho e o formato do arquivo."
+        Atualizar-Modelos
     }
-}
+    $txtInput.Focus()
+})
 
-# ── Opção 4: Liberar VRAM ─────────────────────────────────────────────────
-
-function Release-VRAM {
-    Write-Host ""
-    Write-Info "Modelos na memória (ollama ps):"
-    $psOutput = ollama ps 2>$null
-    $loadedModels = $psOutput | Select-Object -Skip 1 |
-        ForEach-Object { ($_ -split '\s+')[0] } |
-        Where-Object { $_ -and $_ -ne "" }
-
-    if (-not $loadedModels) {
-        Write-Ok "Nenhum modelo carregado na memória."
-        return
-    }
-
-    foreach ($m in $loadedModels) {
-        Write-Info "Parando modelo: $m"
-        ollama stop $m 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            Write-Ok "$m removido da memória."
-        } else {
-            Write-Warn "Não foi possível parar '$m' via CLI. Tentando via API..."
-            $body = @{ model = $m; keep_alive = "0" } | ConvertTo-Json -Compress
-            try {
-                Invoke-RestMethod -Uri "$OLLAMA_HOST/api/generate" `
-                    -Method POST -Body $body -ContentType "application/json" -TimeoutSec 15 | Out-Null
-                Write-Ok "$m descarregado via API."
-            } catch { Write-Warn "Falha ao descarregar '$m'." }
-        }
-    }
-
-    Write-Host ""
-    Write-Info "ollama ps após liberação:"
-    ollama ps 2>$null | ForEach-Object { Write-Host "  $_" }
-}
-
-# ── Opção 5: Diagnóstico ──────────────────────────────────────────────────
-
-function Show-Diagnostics {
-    Write-Host ""
-    Write-Info "ollama ps:"
-    $ps = ollama ps 2>$null
-    if ($ps) {
-        $ps | ForEach-Object { Write-Host "  $_" }
-        $ps | Select-Object -Skip 1 | ForEach-Object {
-            if ($_ -match "100% GPU")          { Write-Ok  "GPU integral — ótimo." }
-            elseif ($_ -match "100% CPU")      { Write-Warn "Modelo na CPU — VRAM insuficiente ou GPU não detectada." }
-            elseif ($_ -match "\d+% GPU")      { Write-Warn "Carregamento híbrido GPU/CPU." }
-        }
-    } else { Write-Host "  (nenhum modelo carregado ou serviço offline)" }
-
-    Write-Host ""
-    Write-Info "Endpoint: $OLLAMA_HOST"
-    if (Test-OllamaOnline) { Write-Ok "Serviço respondendo." }
-    else                   { Write-Warn "Serviço offline." }
-
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        Write-Host ""
-        Write-Info "GPU NVIDIA:"
-        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu `
-            --format=csv,noheader 2>$null | ForEach-Object { Write-Host "  $_" }
-    }
-}
-
-# ── Loop principal ────────────────────────────────────────────────────────
-
-if (-not (Test-OllamaOnline)) {
-    Write-Warn "Serviço Ollama não encontrado em $OLLAMA_HOST."
-    Write-Warn "Inicie o Ollama antes de usar esta interface."
-    Write-Host "  Pressione Enter para continuar mesmo assim..."
-    $null = Read-Host
-}
-
-$continuar = $true
-while ($continuar) {
-    Show-Menu
-    $opcao = Read-Host
-
-    switch ($opcao.Trim()) {
-        "1" { Send-Prompt }
-        "2" { Select-Model }
-        "3" { Import-GGUF }
-        "4" { Release-VRAM }
-        "5" { Show-Diagnostics }
-        "0" { $continuar = $false; break }
-        default { Write-Warn "Opção inválida: '$opcao'" }
-    }
-
-    if ($continuar) {
-        Write-Host ""
-        Write-Host "  Pressione Enter para voltar ao menu..." -ForegroundColor DarkGray
-        $null = Read-Host
-    }
-}
-
-Write-Host ""
-Write-Ok "Interface encerrada. O serviço Ollama continua ativo."
-Write-Host ""
+[void]$form.ShowDialog()
