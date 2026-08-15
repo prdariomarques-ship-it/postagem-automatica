@@ -373,7 +373,8 @@ Execute na ordem: 1 → 2 → 3 → 4. Uma falha na camada 1 invalida as camadas
 ## 13. Checklist de aceite antes de implantar
 
 ```
-[ ] VM possui recursos suficientes; GPU/driver validada se aceleração for requisito.
+[ ] VM possui recursos suficientes; VRAM confirmada para o modelo escolhido (ver §15).
+[ ] GPU/driver validada antes de exigir aceleração (nvidia-smi ou rocm-smi disponível).
 [ ] Bot e Ollama comunicam via localhost/127.0.0.1 na mesma VM.
 [ ] AI_BACKEND=ollama e OLLAMA_NO_CLOUD=1 estão definidos.
 [ ] Nenhuma chave DeepSeek/OpenAI inserida no perfil local-only.
@@ -381,11 +382,126 @@ Execute na ordem: 1 → 2 → 3 → 4. Uma falha na camada 1 invalida as camadas
 [ ] OLLAMA_KEEP_ALIVE=0 escolhido para liberar VRAM automaticamente.
 [ ] python3 tests/test_gerador_local.py retornou 13/13 passando.
 [ ] Inferência curta respondeu com modelo local sem :cloud.
-[ ] ollama ps conferido durante a inferência.
-[ ] Porta 11434 não exposta publicamente sem controles adequados.
+[ ] ollama ps conferido durante a inferência — coluna PROCESSOR mostra "100% GPU".
+[ ] ss -ltnp | grep 11434 confirma 127.0.0.1:11434 (não 0.0.0.0:11434).
+[ ] Porta 11434 bloqueada para interfaces externas (UFW ou iptables — ver §14).
 [ ] Nenhuma alteração commitada/enviada sem revisão e confirmação humana.
 [ ] .env não está versionado (confirmar: git status | grep -v '\.env\.example').
 ```
+
+---
+
+## 14. Isolamento de rede (porta 11434)
+
+Por padrão, o Ollama pode escutar em `0.0.0.0:11434`, expondo a API a qualquer
+interface de rede da VM. Em ambiente de produção, restrinja a porta ao loopback.
+
+### Verificação antes de aplicar regras
+
+```bash
+# Confirme o estado atual antes de modificar firewall:
+ss -ltnp | grep ':11434'
+```
+
+| Resultado | Significado | Ação |
+|-----------|-------------|------|
+| `127.0.0.1:11434` | Seguro — loopback apenas | Nenhuma |
+| `0.0.0.0:11434` | Exposto em todas as interfaces | Aplicar regras abaixo |
+| Sem resultado | Serviço inativo | Inicie o Ollama antes |
+
+### UFW (recomendado para Ubuntu/Debian)
+
+```bash
+# Bloquear acesso externo à porta 11434:
+sudo ufw deny in on eth0 to any port 11434
+sudo ufw allow in on lo to any port 11434
+
+# Verificar regras aplicadas:
+sudo ufw status numbered | grep 11434
+```
+
+> **Atenção:** Não combine regras UFW e `iptables` manuais no mesmo host.
+> Use somente um dos métodos.
+
+### iptables (alternativa, sem UFW)
+
+```bash
+# Permitir loopback; bloquear demais interfaces:
+sudo iptables -A INPUT -i lo -p tcp --dport 11434 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 11434 -j DROP
+
+# Persistir (Debian/Ubuntu):
+sudo apt-get install -y iptables-persistent
+sudo netfilter-persistent save
+
+# Verificar:
+sudo iptables -L INPUT -n --line-numbers | grep 11434
+```
+
+### Verificação final
+
+```bash
+# Deve mostrar apenas 127.0.0.1:11434 ou nenhum resultado externo:
+ss -ltnp | grep ':11434'
+
+# Testar que a API não responde externamente (substitua pelo IP da VM):
+# curl --max-time 3 http://<ip-externo-da-vm>:11434/api/version
+# deve retornar "Connection refused" ou timeout.
+```
+
+---
+
+## 15. Dimensionamento de GPU/VRAM por modelo
+
+### Requisitos mínimos de GPU
+
+| Requisito | Valor mínimo | Observação |
+|-----------|-------------|------------|
+| Compute Capability (Nvidia) | 5.0 (Maxwell, 2014+) | Série 900 ou superior |
+| Driver Nvidia | 550+ | `nvidia-smi` mostra a versão |
+| ROCm (AMD) | 5.4+ | `rocm-smi --version` |
+| Apple Silicon | M1 ou superior | Metal nativo; sem CUDA |
+
+> Verifique compute capability em: https://developer.nvidia.com/cuda-gpus
+
+### Perfil de VRAM por família de modelo (quantização Q4)
+
+| Modelo | VRAM mínima | VRAM recomendada | Observações |
+|--------|------------|-----------------|-------------|
+| `qwen2.5-coder:3b` | 3 GB | 4 GB | Seguro em GPUs de 4–6 GB |
+| `qwen3:4b` | 3 GB | 4 GB | Fallback geral; já instalado |
+| `deepseek-coder:6.7b` | 5 GB | 6 GB | Alternativa de código |
+| `qwen2.5-coder:7b` | 5 GB | 8 GB | **Principal para programação local** |
+| `qwen3:8b` / `deepseek-r1:8b` | 6 GB | 8–10 GB | Qualidade superior; exige margem |
+| `qwen2.5-coder:14b` | 10 GB | 12–16 GB | Modelos 14B; checar antes de baixar |
+| `qwen3-coder:30b` | 20 GB | 24 GB | Requer GPU de alta capacidade |
+
+**Regra prática:** VRAM disponível = VRAM da GPU − uso do sistema. Mantenha ≥ 1 GB de margem
+para evitar que o modelo transborde para CPU durante a inferência.
+
+### Recursos adicionais de VM (além da GPU)
+
+| Recurso | Mínimo recomendado | Para 13B+ |
+|---------|-------------------|-----------|
+| RAM do sistema | 16 GB | 32 GB |
+| vCPUs | 4 | 8 |
+| Disco (`~/.ollama/models`) | 30 GB livres | 60 GB livres |
+
+### Verificar VRAM disponível antes de baixar
+
+```bash
+# Nvidia:
+nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader
+
+# Espaço em disco:
+df -h ~/.ollama/models 2>/dev/null || df -h ~
+
+# Tamanho do modelo antes de baixar (apenas leitura, sem download):
+ollama show qwen2.5-coder:7b --modelfile 2>/dev/null | head -5
+```
+
+> Se `ollama ps` mostrar `100% CPU` após carregamento, a VRAM não foi suficiente.
+> Use um modelo menor ou feche outros processos que consomem GPU.
 
 ---
 

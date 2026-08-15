@@ -39,6 +39,24 @@ try {
     Write-Warn "Abra o app Ollama ou execute: ollama serve (em outro terminal)"
 }
 
+# 2b. Verificar bind de rede
+Write-Sep
+Write-Info "Verificação de bind de rede (porta 11434):"
+$bindOutput = netstat -an 2>$null | Select-String "11434"
+if (-not $bindOutput) {
+    Write-Warn "Porta 11434 não detectada em uso. Verifique se o serviço está ativo."
+} elseif ($bindOutput | Where-Object { $_ -match "0\.0\.0\.0:11434" }) {
+    Write-Warn "Ollama está escutando em 0.0.0.0:11434 — acessível em interfaces externas."
+    Write-Warn "Defina OLLAMA_HOST=127.0.0.1:11434 e reinicie o serviço."
+    $bindOutput | ForEach-Object { Write-Host "  $_" }
+} elseif ($bindOutput | Where-Object { $_ -match "127\.0\.0\.1:11434|\[::1\].*11434" }) {
+    Write-Ok "Ollama vinculado apenas ao loopback (127.0.0.1 ou ::1)."
+    $bindOutput | ForEach-Object { Write-Host "  $_" }
+} else {
+    Write-Info "Resultado de netstat para porta 11434:"
+    $bindOutput | ForEach-Object { Write-Host "  $_" }
+}
+
 # 3. Modelos instalados
 if ($serviceOnline) {
     Write-Sep

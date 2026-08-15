@@ -41,6 +41,40 @@ else
   SKIP_MODELS=1
 fi
 
+# 2b. Verificar bind de rede
+sep
+info "Verificação de bind de rede (porta 11434):"
+if command -v ss &>/dev/null; then
+  BIND_OUTPUT=$(ss -ltnp 2>/dev/null | grep ':11434' || echo "")
+  if [[ -z "$BIND_OUTPUT" ]]; then
+    warn "Porta 11434 não detectada em uso. Verifique se o serviço está ativo."
+  elif echo "$BIND_OUTPUT" | grep -q '0\.0\.0\.0:11434'; then
+    warn "Ollama está escutando em 0.0.0.0:11434 — acessível em interfaces externas."
+    warn "Defina OLLAMA_HOST=127.0.0.1:11434 no override systemd e reinicie o serviço."
+    warn "Documentação: scripts/systemd/ollama-override.conf.example"
+    echo "$BIND_OUTPUT" | sed 's/^/  /'
+  elif echo "$BIND_OUTPUT" | grep -qE '127\.0\.0\.1:11434|\[::1\].*:11434'; then
+    ok "Ollama vinculado apenas ao loopback (127.0.0.1 ou ::1)."
+    echo "$BIND_OUTPUT" | sed 's/^/  /'
+  else
+    info "Resultado de ss para porta 11434:"
+    echo "$BIND_OUTPUT" | sed 's/^/  /'
+  fi
+elif command -v netstat &>/dev/null; then
+  BIND_OUTPUT=$(netstat -ltnp 2>/dev/null | grep ':11434' || echo "")
+  if echo "$BIND_OUTPUT" | grep -q '0\.0\.0\.0:11434'; then
+    warn "Ollama está escutando em 0.0.0.0:11434 — acessível em interfaces externas."
+    echo "$BIND_OUTPUT" | sed 's/^/  /'
+  elif [[ -n "$BIND_OUTPUT" ]]; then
+    ok "Porta 11434 detectada (netstat):"
+    echo "$BIND_OUTPUT" | sed 's/^/  /'
+  else
+    warn "Porta 11434 não detectada. Verifique se o serviço está ativo."
+  fi
+else
+  info "ss e netstat não disponíveis. Verifique manualmente: netstat -ltnp | grep 11434"
+fi
+
 # 3. Modelos instalados
 if [[ -z "${SKIP_MODELS:-}" ]]; then
   sep
