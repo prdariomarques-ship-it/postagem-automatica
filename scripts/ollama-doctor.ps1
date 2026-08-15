@@ -1,9 +1,9 @@
 # ollama-doctor.ps1 — Diagnóstico seguro do ambiente Ollama (Windows PowerShell)
 # Executa somente testes de leitura. Teste de inferência é opt-in.
-# Uso: .\scripts\ollama-doctor.ps1 [-TestModel <modelo>]
+# Uso: .\scripts\ollama-doctor.ps1 [-Model <modelo>]
 
 param(
-    [string]$TestModel = ""
+    [string]$Model = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,12 +97,12 @@ Write-Host "  RAM total: ${ramTotalGB} GB | disponível: ${ramFreeGB} GB"
 
 # 8. Teste de inferência (opt-in)
 Write-Sep
-if ($TestModel) {
-    Write-Info "Teste de inferência com modelo: $TestModel"
-    $installedModels = ollama list 2>$null | Where-Object { $_ -match "^$([regex]::Escape($TestModel))" }
+if ($Model) {
+    Write-Info "Teste de inferência com modelo: $Model"
+    $installedModels = ollama list 2>$null | Where-Object { $_ -match "^$([regex]::Escape($Model))" }
     if ($installedModels) {
         try {
-            $resp = ollama run $TestModel "Responda somente: teste local confirmado." 2>$null
+            $resp = ollama run $Model "Responda somente: teste local confirmado." 2>$null
             if ($resp) {
                 Write-Ok "Resposta recebida: $resp"
             } else {
@@ -114,13 +114,13 @@ if ($TestModel) {
         Write-Info "ollama ps após inferência:"
         ollama ps 2>$null | ForEach-Object { Write-Host "  $_" }
     } else {
-        Write-Warn "Modelo '$TestModel' não está instalado."
+        Write-Warn "Modelo '$Model' não está instalado."
         Write-Warn "Liste modelos com: ollama list"
-        Write-Warn "Para baixar (verifique espaço antes): ollama pull $TestModel"
+        Write-Warn "Para baixar (verifique espaço antes): ollama pull $Model"
     }
 } else {
-    Write-Info "Teste de inferência ignorado (use -TestModel <modelo> para ativar)."
-    Write-Info "Exemplo: .\scripts\ollama-doctor.ps1 -TestModel qwen3:4b"
+    Write-Info "Teste de inferência ignorado (passe -Model <modelo> para ativar)."
+    Write-Info "Exemplo: .\scripts\ollama-doctor.ps1 -Model qwen3:4b"
 }
 
 Write-Sep

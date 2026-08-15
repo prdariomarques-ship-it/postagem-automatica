@@ -1,24 +1,13 @@
 #!/usr/bin/env bash
 # ollama-doctor.sh — Diagnóstico seguro do ambiente Ollama
 # Executa somente testes de leitura. Teste de inferência é opt-in.
-# Uso: ./scripts/ollama-doctor.sh [--test-model <modelo>]
+# Uso: ./scripts/ollama-doctor.sh [<modelo>]
+#   <modelo>  (opcional) executa inferência de teste com esse modelo
 
 set -euo pipefail
 
 OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-TEST_MODEL=""
-
-# Argumentos
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --test-model) TEST_MODEL="${2:-}"; shift 2 ;;
-    -h|--help)
-      echo "Uso: $0 [--test-model <modelo>]"
-      echo "  --test-model <modelo>  Executa inferência de teste (opt-in; pode demorar)"
-      exit 0 ;;
-    *) echo "Argumento desconhecido: $1"; exit 1 ;;
-  esac
-done
+TEST_MODEL="${1:-}"  # argumento posicional: ./ollama-doctor.sh qwen3:4b
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✔${NC} $*"; }
@@ -128,8 +117,8 @@ if [[ -n "$TEST_MODEL" ]]; then
     warn "Para baixar: ollama pull ${TEST_MODEL}  (verifique espaço disponível antes)"
   fi
 else
-  info "Teste de inferência ignorado (use --test-model <modelo> para ativar)."
-  info "Exemplo: $0 --test-model qwen3:4b"
+  info "Teste de inferência ignorado (passe o nome do modelo como argumento para ativar)."
+  info "Exemplo: $0 qwen3:4b"
 fi
 
 sep
