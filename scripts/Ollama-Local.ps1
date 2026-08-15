@@ -351,11 +351,12 @@ $Enviar = {
     $lblErro.ForeColor = [System.Drawing.Color]::DarkGray
     [System.Windows.Forms.Application]::DoEvents()
 
+    $ctxLen = if ($env:OLLAMA_CONTEXT_LENGTH) { [int]$env:OLLAMA_CONTEXT_LENGTH } else { 4096 }
     $body = @{
         model   = $modelo
         prompt  = $prompt
         stream  = $false
-        options = @{ num_ctx = [int]($env:OLLAMA_CONTEXT_LENGTH ?? "4096") }
+        options = @{ num_ctx = $ctxLen }
     } | ConvertTo-Json -Compress
 
     try {
@@ -366,7 +367,29 @@ $Enviar = {
         $lblErro.Text     = ""
         $lblErro.ForeColor = [System.Drawing.Color]::Red
     } catch {
-        $lblErro.Text     = "Erro: $_"
+        # Tentar ler o corpo JSON da resposta Ollama (PS 7+ e PS 5.1)
+        $errMsg = ""
+        if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+            try {
+                $j = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($j.error) { $errMsg = $j.error }
+            } catch {}
+        }
+        if (-not $errMsg -and $_.Exception.Response) {
+            try {
+                $st = $_.Exception.Response.GetResponseStream()
+                $rd = New-Object System.IO.StreamReader($st)
+                $jt = $rd.ReadToEnd(); $rd.Close()
+                $j  = $jt | ConvertFrom-Json -ErrorAction SilentlyContinue
+                if ($j -and $j.error) { $errMsg = $j.error }
+            } catch {}
+        }
+        if (-not $errMsg) { $errMsg = "$_" }
+        $lblErro.Text = if ($errMsg -match "not found|não encontrado") {
+            "Modelo '$modelo' não encontrado. Execute: ollama pull $modelo"
+        } else {
+            "Erro: $errMsg"
+        }
         $lblErro.ForeColor = [System.Drawing.Color]::Red
     } finally {
         $btnEnviar.Enabled = $true
