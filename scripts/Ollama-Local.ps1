@@ -1,518 +1,436 @@
-# Ollama-Local.ps1 — Interface gráfica portátil para Ollama local (Windows)
-# Usa exclusivamente http://127.0.0.1:11434. Sem nuvem. Sem chaves de API.
-# Execute via Abrir-Ollama-Local.cmd ou:
-#   PowerShell -ExecutionPolicy Bypass -File Ollama-Local.ps1
+﻿<#
+  Ollama Local — aplicativo portátil para Windows 11.
+  Política de rede: esta interface usa exclusivamente http://127.0.0.1:11434.
+#>
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-[System.Windows.Forms.Application]::EnableVisualStyles()
+[System.Windows.Forms.Application]::EnableVisualStyles( )
 
-# ── Constantes ────────────────────────────────────────────────────────────
+$script:OllamaBaseUrl = 'http://127.0.0.1:11434'
+$script:Accent = [System.Drawing.ColorTranslator]::FromHtml('#1F8A70' )
+$script:Ink = [System.Drawing.ColorTranslator]::FromHtml('#163020')
+$script:Soft = [System.Drawing.ColorTranslator]::FromHtml('#EAF5EF')
+$script:ActiveRequest = $null
+$script:ActiveAsync = $null
+$script:ActiveModel = $null
 
-$OLLAMA_HOST      = "http://127.0.0.1:11434"
-$COR_VERDE_BTN    = [System.Drawing.Color]::FromArgb(25, 100, 68)
-$COR_LARANJA_BTN  = [System.Drawing.Color]::FromArgb(195, 100, 10)
-$COR_VERMELHO_BTN = [System.Drawing.Color]::FromArgb(180, 50, 30)
-$COR_SAIDA        = [System.Drawing.Color]::FromArgb(0, 128, 0)
-$COR_BRANCO       = [System.Drawing.Color]::White
-$COR_CINZA_BORDA  = [System.Drawing.Color]::FromArgb(180, 180, 180)
-$FONTE_TITULO     = New-Object System.Drawing.Font("Segoe UI", 20, [System.Drawing.FontStyle]::Regular)
-$FONTE_LABEL      = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
-$FONTE_MONO       = New-Object System.Drawing.Font("Consolas",  9, [System.Drawing.FontStyle]::Regular)
-$FONTE_BTN        = New-Object System.Drawing.Font("Segoe UI",  9, [System.Drawing.FontStyle]::Regular)
+function Invoke-LocalOllama {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('GET', 'POST')][string]$Method = 'GET',
+        [hashtable]$Body
+    )
 
-# ── Formulário ────────────────────────────────────────────────────────────
+    $uri = "$script:OllamaBaseUrl$Path"
+    try {
+        if ($Method -eq 'GET') {
+            return Invoke-RestMethod -Uri $uri -Method Get -TimeoutSec 12 -ErrorAction Stop
+        }
+        $json = $Body | ConvertTo-Json -Depth 8 -Compress
+        return Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Body $json -TimeoutSec 180 -ErrorAction Stop
+    }
+    catch {
+        throw "Não foi possível falar com o Ollama local em 127.0.0.1:11434. Abra o Ollama e tente de novo. Detalhe: $($_.Exception.Message)"
+    }
+}
+
+function Add-Transcript {
+    param([string]$Text, [System.Drawing.Color]$Color)
+    $output.SelectionStart = $output.TextLength
+    $output.SelectionColor = $Color
+    $output.AppendText("$Text`r`n`r`n")
+    $output.SelectionColor = $output.ForeColor
+    $output.SelectionStart = $output.TextLength
+    $output.ScrollToCaret()
+}
+
+function Set-AppStatus {
+    param([string]$Text, [bool]$IsError = $false)
+    $statusLabel.Text = $Text
+    $statusLabel.ForeColor = if ($IsError) { [System.Drawing.Color]::Firebrick } else { $script:Accent }
+}
+
+function Refresh-Models {
+    try {
+        Set-AppStatus 'Consultando modelos locais...'
+        $tags = Invoke-LocalOllama -Path '/api/tags'
+        $selected = [string]$modelSelector.SelectedItem
+        $modelSelector.Items.Clear()
+        foreach ($item in @($tags.models | Sort-Object name)) {
+            if ($item.name -match ':cloud$|-cloud:') { continue }
+            [void]$modelSelector.Items.Add($item.name)
+        }
+        if ($modelSelector.Items.Count -eq 0) {
+            Set-AppStatus 'Nenhum modelo local encontrado. Baixe um modelo pelo Ollama antes de usar este app.' $true
+            return
+        }
+        if ($selected -and $modelSelector.Items.Contains($selected)) {
+            $modelSelector.SelectedItem = $selected
+        }
+        else {
+            $modelSelector.SelectedIndex = 0
+        }
+        Update-LoadedStatus
+    }
+    catch {
+        Set-AppStatus $_.Exception.Message $true
+    }
+}
+
+function Update-LoadedStatus {
+    try {
+        $running = Invoke-LocalOllama -Path '/api/ps'
+        $entries = @($running.models)
+        if ($entries.Count -eq 0) {
+            $loadedLabel.Text = 'Nenhum modelo carregado na memória.'
+        }
+        else {
+            $summary = foreach ($entry in $entries) {
+                $vramGb = if ($entry.size_vram) { [math]::Round($entry.size_vram / 1GB, 2) } else { '?' }
+                "$($entry.name) — VRAM: $vramGb GB"
+            }
+            $loadedLabel.Text = "Em memória: " + ($summary -join ' | ')
+        }
+        Set-AppStatus 'Ollama local disponível.'
+    }
+    catch {
+        Set-AppStatus $_.Exception.Message $true
+    }
+}
+
+function Send-Prompt {
+    $model = [string]$modelSelector.SelectedItem
+    $prompt = $promptBox.Text.Trim()
+    if (-not $model) {
+        Set-AppStatus 'Escolha um modelo local antes de enviar.' $true
+        return
+    }
+    if (-not $prompt) {
+        Set-AppStatus 'Escreva uma mensagem antes de enviar.' $true
+        return
+    }
+    if ($script:ActiveAsync) {
+        Set-AppStatus 'Já existe uma resposta em andamento. Aguarde ou cancele a geração atual.' $true
+        return
+    }
+
+    try {
+        $uri = "$script:OllamaBaseUrl/api/generate"
+        $payload = @{ model = $model; prompt = $prompt; stream = $false } | ConvertTo-Json -Depth 6 -Compress
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+        $request = [System.Net.HttpWebRequest]::Create($uri)
+        $request.Method = 'POST'
+        $request.ContentType = 'application/json'
+        $request.ContentLength = $bytes.Length
+        $request.Timeout = 600000
+        $request.ReadWriteTimeout = 600000
+
+        $requestStream = $request.GetRequestStream()
+        $requestStream.Write($bytes, 0, $bytes.Length)
+        $requestStream.Close()
+
+        $script:ActiveRequest = $request
+        $script:ActiveAsync = $request.BeginGetResponse($null, $null)
+        $script:ActiveModel = $model
+        $sendButton.Enabled = $false
+        $cancelButton.Enabled = $true
+        $promptBox.Enabled = $false
+        Set-AppStatus "Gerando com $model em segundo plano. A janela continua utilizável."
+        Add-Transcript -Text "Você — $prompt" -Color $script:Ink
+        $promptBox.Clear()
+        $generationTimer.Start()
+    }
+    catch {
+        Add-Transcript -Text "Erro — Não foi possível iniciar a geração local. $($_.Exception.Message)" -Color [System.Drawing.Color]::Firebrick
+        Set-AppStatus 'A geração não foi iniciada.' $true
+        $script:ActiveRequest = $null
+        $script:ActiveAsync = $null
+        $script:ActiveModel = $null
+    }
+}
+
+function Complete-LocalGeneration {
+    if (-not $script:ActiveAsync -or -not $script:ActiveAsync.IsCompleted) {
+        return
+    }
+
+    $generationTimer.Stop()
+    try {
+        $response = $script:ActiveRequest.EndGetResponse($script:ActiveAsync)
+        $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+        $json = $reader.ReadToEnd()
+        $reader.Close()
+        $response.Close()
+        $result = $json | ConvertFrom-Json
+        Add-Transcript -Text "$($script:ActiveModel) — $($result.response.Trim())" -Color $script:Accent
+        Set-AppStatus 'Resposta local concluída.'
+    }
+    catch {
+        Add-Transcript -Text "Erro — $($_.Exception.Message)" -Color [System.Drawing.Color]::Firebrick
+        Set-AppStatus 'A geração não foi concluída.' $true
+    }
+    finally {
+        $script:ActiveRequest = $null
+        $script:ActiveAsync = $null
+        $script:ActiveModel = $null
+        $sendButton.Enabled = $true
+        $cancelButton.Enabled = $false
+        $promptBox.Enabled = $true
+        Update-LoadedStatus
+    }
+}
+
+function Cancel-LocalGeneration {
+    if (-not $script:ActiveRequest) {
+        return
+    }
+    try {
+        $script:ActiveRequest.Abort()
+    }
+    catch {
+        # A requisição pode ter terminado enquanto o cancelamento era solicitado.
+    }
+    $generationTimer.Stop()
+    $script:ActiveRequest = $null
+    $script:ActiveAsync = $null
+    $script:ActiveModel = $null
+    $sendButton.Enabled = $true
+    $cancelButton.Enabled = $false
+    $promptBox.Enabled = $true
+    Add-Transcript -Text 'Geração cancelada na interface. O modelo pode permanecer carregado até você usar "Liberar VRAM".' -Color [System.Drawing.Color]::DarkGoldenrod
+    Set-AppStatus 'Geração cancelada.'
+    Update-LoadedStatus
+}
+
+function Release-Vram {
+    $model = [string]$modelSelector.SelectedItem
+    if (-not $model) {
+        Set-AppStatus 'Não há modelo selecionado para descarregar.' $true
+        return
+    }
+    try {
+        Set-AppStatus "Descarregando $model da memória..."
+        [void](Invoke-LocalOllama -Path '/api/generate' -Method POST -Body @{
+            model = $model
+            prompt = ''
+            stream = $false
+            keep_alive = 0
+        })
+        Start-Sleep -Milliseconds 600
+        Update-LoadedStatus
+    }
+    catch {
+        Set-AppStatus $_.Exception.Message $true
+    }
+}
+
+function Import-Gguf {
+    $picker = New-Object System.Windows.Forms.OpenFileDialog
+    $picker.Title = 'Selecionar um modelo GGUF local'
+    $picker.Filter = 'Modelos GGUF (*.gguf)|*.gguf|Todos os arquivos (*.*)|*.*'
+    $picker.Multiselect = $false
+
+    if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+        return
+    }
+
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $suggested = ([System.IO.Path]::GetFileNameWithoutExtension($picker.FileName).ToLowerInvariant() -replace '[^a-z0-9._-]', '-')
+    $modelName = [Microsoft.VisualBasic.Interaction]::InputBox(
+        'Informe um nome local para o modelo importado. Exemplo: llama2-meu-gguf:local',
+        'Importar GGUF para o Ollama local',
+        $suggested
+    ).Trim().ToLowerInvariant()
+
+    if (-not $modelName) {
+        return
+    }
+    if ($modelName -notmatch '^[a-z0-9][a-z0-9._-]*(?::[a-z0-9._-]+)?$') {
+        Set-AppStatus 'Use letras minúsculas, números, ponto, hífen, sublinhado e, opcionalmente, uma tag após ":".' $true
+        return
+    }
+    if ($modelName -match ':cloud$|-cloud:') {
+        Set-AppStatus 'Nomes com ":cloud" não são permitidos nesta interface.' $true
+        return
+    }
+
+    $tempFolder = Join-Path $env:TEMP 'ollama-local-portatil'
+    $modelfile = Join-Path $tempFolder 'Modelfile'
+    try {
+        New-Item -ItemType Directory -Path $tempFolder -Force | Out-Null
+        Set-Content -LiteralPath $modelfile -Value ("FROM " + $picker.FileName) -Encoding UTF8
+        $importButton.Enabled = $false
+        Set-AppStatus "Importando $modelName a partir de um arquivo local..."
+        Add-Transcript -Text "Importação local — $modelName`r`nArquivo: $($picker.FileName)" -Color $script:Ink
+        $result = & ollama create $modelName -f $modelfile 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw $result.Trim()
+        }
+        Add-Transcript -Text "Importação concluída — $modelName" -Color $script:Accent
+        Refresh-Models
+        if ($modelSelector.Items.Contains($modelName)) {
+            $modelSelector.SelectedItem = $modelName
+        }
+    }
+    catch {
+        Add-Transcript -Text "Erro na importação GGUF — $($_.Exception.Message)" -Color [System.Drawing.Color]::Firebrick
+        Set-AppStatus 'A importação GGUF não foi concluída.' $true
+    }
+    finally {
+        $importButton.Enabled = $true
+    }
+}
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text            = "Ollama Local — Windows 11"
-$form.ClientSize      = New-Object System.Drawing.Size(970, 660)
-$form.MinimumSize     = New-Object System.Drawing.Size(780, 520)
-$form.StartPosition   = "CenterScreen"
-$form.BackColor       = $COR_BRANCO
-$form.Font            = $FONTE_LABEL
+$form.Text = 'Ollama Local — Windows 11'
+$form.Size = New-Object System.Drawing.Size(950, 700)
+$form.MinimumSize = New-Object System.Drawing.Size(780, 560)
+$form.StartPosition = 'CenterScreen'
+$form.BackColor = [System.Drawing.Color]::White
+$form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
 
-# ── Título ────────────────────────────────────────────────────────────────
+$layout = New-Object System.Windows.Forms.TableLayoutPanel
+$layout.Dock = 'Fill'
+$layout.Padding = New-Object System.Windows.Forms.Padding(22)
+$layout.ColumnCount = 1
+$layout.RowCount = 6
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
+$form.Controls.Add($layout)
 
-$lblTitulo          = New-Object System.Windows.Forms.Label
-$lblTitulo.Text     = "Ollama Local"
-$lblTitulo.Font     = $FONTE_TITULO
-$lblTitulo.Location = New-Object System.Drawing.Point(16, 12)
-$lblTitulo.AutoSize = $true
-$form.Controls.Add($lblTitulo)
+$title = New-Object System.Windows.Forms.Label
+$title.Text = 'Ollama Local'
+$title.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 23, [System.Drawing.FontStyle]::Bold)
+$title.ForeColor = $script:Ink
+$title.AutoSize = $true
+$layout.Controls.Add($title, 0, 0)
 
-# ── Linha de modelo ───────────────────────────────────────────────────────
+$topPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$topPanel.AutoSize = $true
+$topPanel.Dock = 'Fill'
+$topPanel.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 12)
 
-$lblModelo          = New-Object System.Windows.Forms.Label
-$lblModelo.Text     = "Modelo local:"
-$lblModelo.ForeColor= [System.Drawing.Color]::FromArgb(200, 80, 0)
-$lblModelo.Location = New-Object System.Drawing.Point(16, 58)
-$lblModelo.AutoSize = $true
-$form.Controls.Add($lblModelo)
+$modelText = New-Object System.Windows.Forms.Label
+$modelText.Text = 'Modelo local:'
+$modelText.AutoSize = $true
+$modelText.Padding = New-Object System.Windows.Forms.Padding(0, 7, 5, 0)
+$topPanel.Controls.Add($modelText)
 
-$cmbModelo               = New-Object System.Windows.Forms.ComboBox
-$cmbModelo.Location      = New-Object System.Drawing.Point(108, 55)
-$cmbModelo.Size          = New-Object System.Drawing.Size(210, 25)
-$cmbModelo.DropDownStyle = "DropDownList"
-$cmbModelo.Anchor        = "Top, Left"
-$form.Controls.Add($cmbModelo)
+$modelSelector = New-Object System.Windows.Forms.ComboBox
+$modelSelector.Width = 280
+$modelSelector.DropDownStyle = [System.Windows.Forms.ComboBoxStyle]::DropDownList
+$topPanel.Controls.Add($modelSelector)
 
-# ── Botões superiores ─────────────────────────────────────────────────────
+$refreshButton = New-Object System.Windows.Forms.Button
+$refreshButton.Text = 'Atualizar modelos'
+$refreshButton.AutoSize = $true
+$refreshButton.BackColor = $script:Soft
+$topPanel.Controls.Add($refreshButton)
 
-function New-BotaoSuperior($texto, $x, [System.Drawing.Color]$bg, [System.Drawing.Color]$fg) {
-    $b = New-Object System.Windows.Forms.Button
-    $b.Text      = $texto
-    $b.Location  = New-Object System.Drawing.Point($x, 53)
-    $b.AutoSize  = $true
-    $b.Padding   = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
-    $b.Font      = $FONTE_BTN
-    $b.FlatStyle = "Flat"
-    $b.BackColor = $bg
-    $b.ForeColor = $fg
-    $b.FlatAppearance.BorderColor = $COR_CINZA_BORDA
-    $b.Cursor    = [System.Windows.Forms.Cursors]::Hand
-    return $b
-}
+$statusButton = New-Object System.Windows.Forms.Button
+$statusButton.Text = 'Ver status'
+$statusButton.AutoSize = $true
+$statusButton.BackColor = $script:Soft
+$topPanel.Controls.Add($statusButton)
 
-$btnAtualizar = New-BotaoSuperior "Atualizar modelos"  328 $COR_BRANCO ([System.Drawing.Color]::Black)
-$btnStatus    = New-BotaoSuperior "Ver status"         472 $COR_BRANCO ([System.Drawing.Color]::Black)
-$btnLiberar   = New-BotaoSuperior "Liberar VRAM"       562 $COR_LARANJA_BTN $COR_BRANCO
-$btnGGUF      = New-BotaoSuperior "Importar GGUF local" 670 $COR_BRANCO ([System.Drawing.Color]::Black)
+$releaseButton = New-Object System.Windows.Forms.Button
+$releaseButton.Text = 'Liberar VRAM'
+$releaseButton.AutoSize = $true
+$releaseButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FFF1DB')
+$topPanel.Controls.Add($releaseButton)
 
-foreach ($b in @($btnAtualizar, $btnStatus, $btnLiberar, $btnGGUF)) {
-    $form.Controls.Add($b)
-}
+$importButton = New-Object System.Windows.Forms.Button
+$importButton.Text = 'Importar GGUF local'
+$importButton.AutoSize = $true
+$importButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#E8F0FF')
+$topPanel.Controls.Add($importButton)
+$layout.Controls.Add($topPanel, 0, 1)
 
-# ── Área de saída ─────────────────────────────────────────────────────────
+$output = New-Object System.Windows.Forms.RichTextBox
+$output.Dock = 'Fill'
+$output.ReadOnly = $true
+$output.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#F7FAF8')
+$output.BorderStyle = [System.Windows.Forms.BorderStyle]::FixedSingle
+$output.Font = New-Object System.Drawing.Font('Consolas', 10)
+$output.ForeColor = $script:Ink
+$layout.Controls.Add($output, 0, 2)
 
-$txtSaida             = New-Object System.Windows.Forms.RichTextBox
-$txtSaida.Location    = New-Object System.Drawing.Point(16, 90)
-$txtSaida.Size        = New-Object System.Drawing.Size(938, 400)
-$txtSaida.Anchor      = "Top, Left, Right, Bottom"
-$txtSaida.ReadOnly    = $true
-$txtSaida.BackColor   = $COR_BRANCO
-$txtSaida.ForeColor   = $COR_SAIDA
-$txtSaida.Font        = $FONTE_MONO
-$txtSaida.BorderStyle = "FixedSingle"
-$txtSaida.ScrollBars  = "Vertical"
-$txtSaida.DetectUrls  = $false
-$form.Controls.Add($txtSaida)
+$loadedLabel = New-Object System.Windows.Forms.Label
+$loadedLabel.Text = 'Verificando memória...'
+$loadedLabel.AutoSize = $true
+$loadedLabel.ForeColor = $script:Ink
+$loadedLabel.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 4)
+$layout.Controls.Add($loadedLabel, 0, 3)
 
-# ── Status de memória ─────────────────────────────────────────────────────
+$promptBox = New-Object System.Windows.Forms.TextBox
+$promptBox.Dock = 'Fill'
+$promptBox.Multiline = $true
+$promptBox.Height = 90
+$promptBox.ScrollBars = 'Vertical'
+$layout.Controls.Add($promptBox, 0, 4)
 
-$lblMemoria           = New-Object System.Windows.Forms.Label
-$lblMemoria.Text      = "Nenhum modelo carregado na memória."
-$lblMemoria.ForeColor = [System.Drawing.Color]::Green
-$lblMemoria.Location  = New-Object System.Drawing.Point(16, 498)
-$lblMemoria.AutoSize  = $true
-$lblMemoria.Anchor    = "Bottom, Left"
-$form.Controls.Add($lblMemoria)
+$bottomPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+$bottomPanel.AutoSize = $true
+$bottomPanel.Dock = 'Fill'
+$bottomPanel.Padding = New-Object System.Windows.Forms.Padding(0, 10, 0, 0)
 
-# ── Área de entrada ───────────────────────────────────────────────────────
+$sendButton = New-Object System.Windows.Forms.Button
+$sendButton.Text = 'Enviar ao modelo local'
+$sendButton.AutoSize = $true
+$sendButton.BackColor = $script:Accent
+$sendButton.ForeColor = [System.Drawing.Color]::White
+$sendButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$bottomPanel.Controls.Add($sendButton)
 
-$txtInput             = New-Object System.Windows.Forms.TextBox
-$txtInput.Location    = New-Object System.Drawing.Point(16, 518)
-$txtInput.Size        = New-Object System.Drawing.Size(938, 64)
-$txtInput.Multiline   = $true
-$txtInput.ScrollBars  = "Vertical"
-$txtInput.Font        = $FONTE_LABEL
-$txtInput.BorderStyle = "FixedSingle"
-$txtInput.Anchor      = "Bottom, Left, Right"
-$form.Controls.Add($txtInput)
+$cancelButton = New-Object System.Windows.Forms.Button
+$cancelButton.Text = 'Cancelar resposta'
+$cancelButton.AutoSize = $true
+$cancelButton.Enabled = $false
+$cancelButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#FFF1DB')
+$bottomPanel.Controls.Add($cancelButton)
 
-# ── Botões inferiores ─────────────────────────────────────────────────────
+$clearButton = New-Object System.Windows.Forms.Button
+$clearButton.Text = 'Limpar conversa'
+$clearButton.AutoSize = $true
+$clearButton.BackColor = $script:Soft
+$bottomPanel.Controls.Add($clearButton)
 
-$btnEnviar                        = New-Object System.Windows.Forms.Button
-$btnEnviar.Text                   = "Enviar ao modelo local"
-$btnEnviar.Location               = New-Object System.Drawing.Point(16, 590)
-$btnEnviar.Size                   = New-Object System.Drawing.Size(180, 36)
-$btnEnviar.Font                   = $FONTE_BTN
-$btnEnviar.FlatStyle              = "Flat"
-$btnEnviar.BackColor              = $COR_VERDE_BTN
-$btnEnviar.ForeColor              = $COR_BRANCO
-$btnEnviar.FlatAppearance.BorderSize = 0
-$btnEnviar.Cursor                 = [System.Windows.Forms.Cursors]::Hand
-$btnEnviar.Anchor                 = "Bottom, Left"
-$form.Controls.Add($btnEnviar)
+$statusLabel = New-Object System.Windows.Forms.Label
+$statusLabel.Text = 'Conectando somente a 127.0.0.1:11434...'
+$statusLabel.AutoSize = $true
+$statusLabel.Padding = New-Object System.Windows.Forms.Padding(16, 7, 0, 0)
+$statusLabel.ForeColor = $script:Accent
+$bottomPanel.Controls.Add($statusLabel)
+$layout.Controls.Add($bottomPanel, 0, 5)
 
-# Cancelar fica invisível até o envio ser disparado
-$btnCancelar                        = New-Object System.Windows.Forms.Button
-$btnCancelar.Text                   = "Cancelar"
-$btnCancelar.Location               = New-Object System.Drawing.Point(204, 590)
-$btnCancelar.Size                   = New-Object System.Drawing.Size(88, 36)
-$btnCancelar.Font                   = $FONTE_BTN
-$btnCancelar.FlatStyle              = "Flat"
-$btnCancelar.BackColor              = $COR_VERMELHO_BTN
-$btnCancelar.ForeColor              = $COR_BRANCO
-$btnCancelar.FlatAppearance.BorderSize = 0
-$btnCancelar.Cursor                 = [System.Windows.Forms.Cursors]::Hand
-$btnCancelar.Anchor                 = "Bottom, Left"
-$btnCancelar.Visible                = $false
-$form.Controls.Add($btnCancelar)
+$generationTimer = New-Object System.Windows.Forms.Timer
+$generationTimer.Interval = 200
+$generationTimer.Add_Tick({ Complete-LocalGeneration })
 
-$btnLimpar                        = New-Object System.Windows.Forms.Button
-$btnLimpar.Text                   = "Limpar conversa"
-$btnLimpar.Location               = New-Object System.Drawing.Point(300, 590)
-$btnLimpar.AutoSize               = $true
-$btnLimpar.Padding                = New-Object System.Windows.Forms.Padding(8, 4, 8, 4)
-$btnLimpar.Font                   = $FONTE_BTN
-$btnLimpar.FlatStyle              = "Flat"
-$btnLimpar.BackColor              = $COR_BRANCO
-$btnLimpar.FlatAppearance.BorderColor = $COR_CINZA_BORDA
-$btnLimpar.Cursor                 = [System.Windows.Forms.Cursors]::Hand
-$btnLimpar.Anchor                 = "Bottom, Left"
-$form.Controls.Add($btnLimpar)
-
-$lblErro              = New-Object System.Windows.Forms.Label
-$lblErro.Text         = ""
-$lblErro.ForeColor    = [System.Drawing.Color]::Red
-$lblErro.Location     = New-Object System.Drawing.Point(460, 600)
-$lblErro.AutoSize     = $true
-$lblErro.Anchor       = "Bottom, Left"
-$form.Controls.Add($lblErro)
-
-# ── Estado assíncrono ─────────────────────────────────────────────────────
-
-$script:AsyncJob    = $null
-$script:AsyncRS     = $null
-$script:AsyncModelo = ""
-
-# Timer de 300 ms — verifica no thread da UI se a requisição HTTP terminou.
-# Não bloqueia o WinForms message loop.
-$pollingTimer          = New-Object System.Windows.Forms.Timer
-$pollingTimer.Interval = 300
-
-# ── Funções auxiliares ────────────────────────────────────────────────────
-
-function Escrever-Saida([string]$texto, [System.Drawing.Color]$cor) {
-    $txtSaida.SelectionStart  = $txtSaida.TextLength
-    $txtSaida.SelectionLength = 0
-    $txtSaida.SelectionColor  = $cor
-    $txtSaida.AppendText($texto + "`n")
-    $txtSaida.SelectionColor  = $COR_SAIDA
-    $txtSaida.ScrollToCaret()
-    [System.Windows.Forms.Application]::DoEvents()
-}
-
-function Atualizar-StatusMemoria {
-    try {
-        $ps = ollama ps 2>$null | Select-Object -Skip 1 | Where-Object { $_.Trim() -ne "" }
-        if ($ps) {
-            $nomes = ($ps | ForEach-Object { ($_ -split '\s+')[0] }) -join ", "
-            $lblMemoria.Text      = "Na memória: $nomes"
-            $lblMemoria.ForeColor = [System.Drawing.Color]::DarkGreen
-        } else {
-            $lblMemoria.Text      = "Nenhum modelo carregado na memória."
-            $lblMemoria.ForeColor = [System.Drawing.Color]::Green
-        }
-    } catch {
-        $lblMemoria.Text = "Não foi possível verificar ollama ps."
-    }
-}
-
-function Atualizar-Modelos {
-    $cmbModelo.Items.Clear()
-    try {
-        $lista = ollama list 2>$null | Select-Object -Skip 1 | Where-Object { $_.Trim() -ne "" }
-        foreach ($linha in $lista) {
-            $nome = ($linha -split '\s+')[0]
-            if ($nome -and $nome -notmatch ":cloud|-cloud") {
-                [void]$cmbModelo.Items.Add($nome)
-            }
-        }
-        if ($cmbModelo.Items.Count -gt 0) {
-            $preDefinido = $env:OLLAMA_MODEL
-            $idx = if ($preDefinido) { $cmbModelo.Items.IndexOf($preDefinido) } else { -1 }
-            $cmbModelo.SelectedIndex = if ($idx -ge 0) { $idx } else { 0 }
-            Escrever-Saida "[$($cmbModelo.Items.Count) modelo(s) carregado(s) na lista.]" ([System.Drawing.Color]::DarkGray)
-        } else {
-            Escrever-Saida "[Nenhum modelo local encontrado. Use: ollama pull qwen3:4b]" ([System.Drawing.Color]::OrangeRed)
-        }
-    } catch {
-        Escrever-Saida "[Erro ao listar modelos: $_]" ([System.Drawing.Color]::Red)
-    }
-    Atualizar-StatusMemoria
-}
-
-function Testar-Servico {
-    try {
-        $null = Invoke-RestMethod -Uri "$OLLAMA_HOST/api/version" -TimeoutSec 5
-        return $true
-    } catch { return $false }
-}
-
-function Finalizar-Async {
-    $pollingTimer.Stop()
-    if ($script:AsyncRS) {
-        try { $script:AsyncRS.Stop()    } catch {}
-        try { $script:AsyncRS.Dispose() } catch {}
-        $script:AsyncRS = $null
-    }
-    $script:AsyncJob    = $null
-    $script:AsyncModelo = ""
-    $btnEnviar.Enabled  = $true
-    $btnCancelar.Visible = $false
-    Atualizar-StatusMemoria
-}
-
-# ── Timer de polling ──────────────────────────────────────────────────────
-
-$pollingTimer.Add_Tick({
-    if (-not $script:AsyncJob -or -not $script:AsyncRS) { $pollingTimer.Stop(); return }
-    if (-not $script:AsyncJob.IsCompleted) { return }
-
-    try {
-        $resultado = $script:AsyncRS.EndInvoke($script:AsyncJob)
-        if ($resultado -and $resultado.Count -gt 0) {
-            $r = $resultado[0]
-            if ($r.ok) {
-                Escrever-Saida "$($script:AsyncModelo): $($r.text)" $COR_SAIDA
-                $lblErro.Text      = ""
-                $lblErro.ForeColor = [System.Drawing.Color]::Red
-            } else {
-                $lblErro.Text = if ($r.error -match "not found") {
-                    "Modelo '$($script:AsyncModelo)' não encontrado. Execute: ollama pull $($script:AsyncModelo)"
-                } else { "Erro: $($r.error)" }
-                $lblErro.ForeColor = [System.Drawing.Color]::Red
-            }
-        }
-    } catch {
-        $lblErro.Text      = "Erro interno: $_"
-        $lblErro.ForeColor = [System.Drawing.Color]::Red
-    } finally {
-        Finalizar-Async
-    }
-})
-
-# ── Eventos ───────────────────────────────────────────────────────────────
-
-$btnCancelar.Add_Click({
-    Escrever-Saida "[Requisição cancelada pelo usuário.]" ([System.Drawing.Color]::DarkGray)
-    $lblErro.Text = ""
-    Finalizar-Async
-})
-
-$btnAtualizar.Add_Click({
-    Escrever-Saida "[Atualizando lista de modelos...]" ([System.Drawing.Color]::DarkGray)
-    Atualizar-Modelos
-})
-
-$btnStatus.Add_Click({
-    Escrever-Saida "[ollama ps]" ([System.Drawing.Color]::DarkGray)
-    $saida = ollama ps 2>$null
-    if ($saida) {
-        foreach ($linha in $saida) { Escrever-Saida "  $linha" ([System.Drawing.Color]::DarkCyan) }
-    } else {
-        Escrever-Saida "  (nenhum modelo carregado ou serviço offline)" ([System.Drawing.Color]::Gray)
-    }
-    if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-        Escrever-Saida "[GPU nvidia-smi]" ([System.Drawing.Color]::DarkGray)
-        $gpu = nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader 2>$null
-        foreach ($g in $gpu) { Escrever-Saida "  $g" ([System.Drawing.Color]::DarkCyan) }
-    }
-    Atualizar-StatusMemoria
-})
-
-$btnLiberar.Add_Click({
-    Escrever-Saida "[Liberando VRAM...]" ([System.Drawing.Color]::DarkGray)
-    $modelos = ollama ps 2>$null | Select-Object -Skip 1 |
-        ForEach-Object { ($_ -split '\s+')[0] } | Where-Object { $_ }
-    if (-not $modelos) {
-        Escrever-Saida "  Nenhum modelo estava carregado." ([System.Drawing.Color]::Gray)
-    } else {
-        foreach ($m in $modelos) {
-            ollama stop $m 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                Escrever-Saida "  ✔ $m removido da VRAM." $COR_SAIDA
-            } else {
-                $body = (@{ model = $m; keep_alive = "0" } | ConvertTo-Json -Compress)
-                try {
-                    Invoke-RestMethod -Uri "$OLLAMA_HOST/api/generate" -Method POST `
-                        -Body $body -ContentType "application/json" -TimeoutSec 15 | Out-Null
-                    Escrever-Saida "  ✔ $m descarregado via API." $COR_SAIDA
-                } catch {
-                    Escrever-Saida "  ⚠ Não foi possível parar '$m'." ([System.Drawing.Color]::OrangeRed)
-                }
-            }
-        }
-    }
-    Atualizar-StatusMemoria
-})
-
-$btnGGUF.Add_Click({
-    $dlg = New-Object System.Windows.Forms.OpenFileDialog
-    $dlg.Title  = "Selecione o arquivo GGUF"
-    $dlg.Filter = "Modelos GGUF (*.gguf)|*.gguf|Todos os arquivos (*.*)|*.*"
-    if ($dlg.ShowDialog() -ne "OK") { return }
-    $ggufPath = $dlg.FileName
-
-    $info = Get-Item $ggufPath
-    Escrever-Saida "[GGUF selecionado: $($info.Name) — $([math]::Round($info.Length/1GB,2)) GB]" ([System.Drawing.Color]::DarkGray)
-
-    $nomeForm = New-Object System.Windows.Forms.Form
-    $nomeForm.Text             = "Nome do modelo"
-    $nomeForm.ClientSize       = New-Object System.Drawing.Size(360, 110)
-    $nomeForm.StartPosition    = "CenterParent"
-    $nomeForm.FormBorderStyle  = "FixedDialog"
-
-    $nomeLabel          = New-Object System.Windows.Forms.Label
-    $nomeLabel.Text     = "Nome local (ex: meu-modelo:q4):"
-    $nomeLabel.Location = New-Object System.Drawing.Point(12, 14)
-    $nomeLabel.AutoSize = $true
-    $nomeForm.Controls.Add($nomeLabel)
-
-    $nomeInput          = New-Object System.Windows.Forms.TextBox
-    $nomeInput.Location = New-Object System.Drawing.Point(12, 36)
-    $nomeInput.Size     = New-Object System.Drawing.Size(330, 25)
-    $nomeForm.Controls.Add($nomeInput)
-
-    $nomeOk              = New-Object System.Windows.Forms.Button
-    $nomeOk.Text         = "Criar modelo"
-    $nomeOk.Location     = New-Object System.Drawing.Point(12, 70)
-    $nomeOk.DialogResult = "OK"
-    $nomeOk.BackColor    = $COR_VERDE_BTN
-    $nomeOk.ForeColor    = $COR_BRANCO
-    $nomeOk.FlatStyle    = "Flat"
-    $nomeForm.Controls.Add($nomeOk)
-    $nomeForm.AcceptButton = $nomeOk
-
-    if ($nomeForm.ShowDialog($form) -ne "OK") { return }
-    $localName = $nomeInput.Text.Trim()
-    if (-not $localName) {
-        Escrever-Saida "  Nome não informado. Cancelado." ([System.Drawing.Color]::Gray); return
-    }
-    if ($localName -match ":cloud|-cloud") {
-        Escrever-Saida "  ✖ Nome não pode conter ':cloud' ou '-cloud'." ([System.Drawing.Color]::Red); return
-    }
-
-    Escrever-Saida "[Criando modelo '$localName'... Aguarde — pode demorar alguns minutos.]" ([System.Drawing.Color]::DarkGray)
-    [System.Windows.Forms.Application]::DoEvents()
-
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    try {
-        Set-Content -Path $tempFile -Value "FROM $ggufPath" -Encoding UTF8
-        $proc = Start-Process -FilePath "ollama" -ArgumentList "create", $localName, "-f", $tempFile `
-            -Wait -PassThru -WindowStyle Hidden
-        if ($proc.ExitCode -eq 0) {
-            Escrever-Saida "  ✔ Modelo '$localName' criado com sucesso." $COR_SAIDA
-            Atualizar-Modelos
-        } else {
-            Escrever-Saida "  ✖ Falha ao criar modelo (código $($proc.ExitCode))." ([System.Drawing.Color]::Red)
-        }
-    } finally {
-        Remove-Item $tempFile -ErrorAction SilentlyContinue
-    }
-})
-
-# ── Enviar (assíncrono via Runspace + Timer) ──────────────────────────────
-#
-# O Invoke-RestMethod NÃO é executado no thread da UI. Um Runspace separado
-# faz a chamada HTTP; o pollingTimer verifica a conclusão a cada 300 ms sem
-# bloquear o message loop do WinForms.
-
-$Enviar = {
-    $lblErro.Text = ""
-    $prompt = $txtInput.Text.Trim()
-    if (-not $prompt) {
-        $lblErro.Text = "Escreva uma mensagem antes de enviar."
-        return
-    }
-    $modelo = $cmbModelo.SelectedItem
-    if (-not $modelo) {
-        $lblErro.Text = "Selecione um modelo antes de enviar."
-        return
-    }
-    if ($modelo -match ":cloud|-cloud") {
-        $lblErro.Text = "Modelos ':cloud' bloqueados. Escolha um modelo local."
-        return
-    }
-
-    Escrever-Saida "Você: $prompt" ([System.Drawing.Color]::FromArgb(0, 90, 160))
-    $txtInput.Text       = ""
-    $btnEnviar.Enabled   = $false
-    $btnCancelar.Visible = $true
-    $lblErro.Text        = "Gerando resposta..."
-    $lblErro.ForeColor   = [System.Drawing.Color]::DarkGray
-    [System.Windows.Forms.Application]::DoEvents()
-
-    $ctxLen = if ($env:OLLAMA_CONTEXT_LENGTH) { [int]$env:OLLAMA_CONTEXT_LENGTH } else { 4096 }
-    $bodyJson = @{
-        model   = $modelo
-        prompt  = $prompt
-        stream  = $false
-        options = @{ num_ctx = $ctxLen }
-    } | ConvertTo-Json -Compress
-
-    $capturedHost  = $OLLAMA_HOST
-    $capturedBody  = $bodyJson
-    $script:AsyncModelo = $modelo
-
-    $rs = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace()
-    $rs.Open()
-    $ps = [System.Management.Automation.PowerShell]::Create()
-    $ps.Runspace = $rs
-
-    [void]$ps.AddScript({
-        param($h, $b)
-        try {
-            $r = Invoke-RestMethod -Uri "$h/api/generate" `
-                -Method POST -Body $b -ContentType "application/json" -TimeoutSec 300
-            return @{ ok = $true; text = [string]$r.response.Trim(); error = "" }
-        } catch {
-            $errMsg = [string]$_
-            try {
-                if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
-                    $j = $_.ErrorDetails.Message | ConvertFrom-Json -ErrorAction SilentlyContinue
-                    if ($j.error) { $errMsg = [string]$j.error }
-                } elseif ($_.Exception.Response) {
-                    $st = $_.Exception.Response.GetResponseStream()
-                    $rd = New-Object System.IO.StreamReader($st)
-                    $jt = $rd.ReadToEnd(); $rd.Close()
-                    $j  = $jt | ConvertFrom-Json -ErrorAction SilentlyContinue
-                    if ($j -and $j.error) { $errMsg = [string]$j.error }
-                }
-            } catch {}
-            return @{ ok = $false; text = ""; error = $errMsg }
-        }
-    }).AddArgument($capturedHost).AddArgument($capturedBody) | Out-Null
-
-    $script:AsyncRS  = $ps
-    $script:AsyncJob = $ps.BeginInvoke()
-    $pollingTimer.Start()
-}
-
-$btnEnviar.Add_Click($Enviar)
-
-$txtInput.Add_KeyDown({
-    if ($_.Control -and $_.KeyCode -eq "Return") {
+$refreshButton.Add_Click({ Refresh-Models })
+$statusButton.Add_Click({ Update-LoadedStatus })
+$releaseButton.Add_Click({ Release-Vram })
+$importButton.Add_Click({ Import-Gguf })
+$sendButton.Add_Click({ Send-Prompt })
+$cancelButton.Add_Click({ Cancel-LocalGeneration })
+$clearButton.Add_Click({ $output.Clear() })
+$promptBox.Add_KeyDown({
+    if ($_.Control -and $_.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
         $_.SuppressKeyPress = $true
-        & $Enviar
+        Send-Prompt
     }
 })
-
-$btnLimpar.Add_Click({
-    $txtSaida.Clear()
-    Escrever-Saida "Interface local iniciada. Ela só se comunica com o Ollama em $OLLAMA_HOST." ([System.Drawing.Color]::FromArgb(0, 140, 0))
-})
-
-# ── Inicialização ─────────────────────────────────────────────────────────
-
-$form.Add_Shown({
-    Escrever-Saida "Interface local iniciada. Ela só se comunica com o Ollama em $OLLAMA_HOST." ([System.Drawing.Color]::FromArgb(0, 140, 0))
-    if (-not (Testar-Servico)) {
-        Escrever-Saida "⚠ Serviço Ollama não encontrado em $OLLAMA_HOST." ([System.Drawing.Color]::OrangeRed)
-        Escrever-Saida "  Inicie o Ollama e clique em 'Atualizar modelos'." ([System.Drawing.Color]::OrangeRed)
-    } else {
-        Atualizar-Modelos
-    }
-    $txtInput.Focus()
-})
-
 $form.Add_FormClosing({
-    $pollingTimer.Stop()
-    if ($script:AsyncRS) {
-        try { $script:AsyncRS.Stop()    } catch {}
-        try { $script:AsyncRS.Dispose() } catch {}
+    if ($script:ActiveRequest) {
+        try { $script:ActiveRequest.Abort() } catch {}
     }
 })
 
+Add-Transcript -Text 'Interface local iniciada. Ela só se comunica com o Ollama em 127.0.0.1:11434.' -Color $script:Accent
+Refresh-Models
 [void]$form.ShowDialog()

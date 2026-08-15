@@ -1,5 +1,12 @@
 # Ollama Local — Pacote Portátil para Windows
 
+## Changelog
+
+| Versão | Descrição |
+|--------|-----------|
+| V2 | Envio assíncrono com cancelamento seguro; janela permanece responsiva durante a inferência; correção de codificação UTF-8 com BOM mantida. |
+| V1 | Versão inicial com interface WinForms e envio síncrono. |
+
 Interface de linha de comando para usar o Ollama inteiramente local no Windows.
 Sem nuvem, sem chaves de API, sem instaladores adicionais.
 
@@ -81,6 +88,14 @@ Pare com **Ctrl+C** quando terminar.
 | `OLLAMA_MODEL` | (nenhum) | Modelo pré-selecionado ao abrir a interface |
 | `OLLAMA_CONTEXT_LENGTH` | `4096` | Tokens de contexto por requisição |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Endpoint do servidor (não altere para URL remota) |
+
+## Resposta em segundo plano (V2)
+
+A partir da V2, o envio de prompts **não bloqueia mais a janela** durante a geração da resposta. O aplicativo permanece totalmente responsivo enquanto o modelo processa.
+
+- **Botão "Cancelar resposta":** interrompe a requisição HTTP em andamento imediatamente. O modelo, porém, pode continuar carregado na VRAM até que você use a opção **[4] Liberar VRAM** no menu.
+- **Timeout interno:** a requisição tem limite de **10 minutos**. Se o modelo não responder nesse prazo (ex.: modelo muito grande para a GPU), a interface cancela automaticamente e exibe mensagem de erro.
+- **Durante a geração:** o campo de prompt e o botão "Enviar" ficam desabilitados; apenas "Cancelar resposta" fica ativo.
 
 ## Solução de problemas
 
