@@ -4,6 +4,7 @@
 
 | Versão | Descrição |
 |--------|-----------|
+| V3 (comparativa) | Artefatos opcionais para comparar Runspace e APM, sem substituir a V2 estável do aplicativo. |
 | V2 | Envio assíncrono com cancelamento seguro; janela permanece responsiva durante a inferência; correção de codificação UTF-8 com BOM mantida. |
 | V1 | Versão inicial com interface WinForms e envio síncrono. |
 
@@ -28,6 +29,8 @@ Sem nuvem, sem chaves de API, sem instaladores adicionais.
 | `Ollama-Local.ps1` | Interface principal (PowerShell). Não execute diretamente — use o `.cmd` acima. |
 | `Testar-Ollama-Local.cmd` | Diagnóstico rápido: versão, serviço, modelos, GPU, inferência de teste. |
 | `Monitorar-VRAM.cmd` | Monitor ao vivo de VRAM e GPU. Abra em janela separada durante inferência. |
+| `Ollama-Local-V3-DuallMode.ps1` | Interface opcional de comparação, iniciada com `-Mode Runspace` ou `-Mode APM`. Não substitui `Ollama-Local.ps1`. |
+| `Teste-Estresse-VRAM.ps1` | Bateria comparativa local de tempo, VRAM e cancelamento entre os modos Runspace e APM. |
 | `LEIA-ME.md` | Este arquivo. |
 
 ## Como usar
@@ -96,6 +99,27 @@ A partir da V2, o envio de prompts **não bloqueia mais a janela** durante a ger
 - **Botão "Cancelar resposta":** interrompe a requisição HTTP em andamento imediatamente. O modelo, porém, pode continuar carregado na VRAM até que você use a opção **[4] Liberar VRAM** no menu.
 - **Timeout interno:** a requisição tem limite de **10 minutos**. Se o modelo não responder nesse prazo (ex.: modelo muito grande para a GPU), a interface cancela automaticamente e exibe mensagem de erro.
 - **Durante a geração:** o campo de prompt e o botão "Enviar" ficam desabilitados; apenas "Cancelar resposta" fica ativo.
+
+## Comparação opcional Runspace × APM (V3)
+
+A V2 (`Ollama-Local.ps1`) continua sendo a interface principal recomendada. Ela usa APM (`HttpWebRequest.BeginGetResponse`) com timer de 200 ms e cancelamento por `Abort()`.
+
+A V3 é um artefato de avaliação: ela oferece os dois mecanismos de execução, sempre contra o mesmo Ollama local em `127.0.0.1:11434`.
+
+| Modo | Comando | Mecanismo | Cancelamento |
+|------|---------|-----------|--------------|
+| Runspace | `powershell -ExecutionPolicy Bypass -File .\Ollama-Local-V3-DuallMode.ps1 -Mode Runspace` | `Invoke-RestMethod` dentro de runspace dedicado + timer de 300 ms | `Stop()` do pipeline PowerShell |
+| APM | `powershell -ExecutionPolicy Bypass -File .\Ollama-Local-V3-DuallMode.ps1 -Mode APM` | `HttpWebRequest.BeginGetResponse` + timer de 200 ms | `Abort()` da requisição HTTP |
+
+Para medir as diferenças no computador que realmente possui a GPU, abra o PowerShell na pasta `scripts` e execute:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Teste-Estresse-VRAM.ps1 -Iterations 10
+```
+
+O teste utiliza somente os modelos locais listados pela API do Ollama e rejeita nomes terminados em `:cloud` ou contendo `-cloud:`. Ele mede o tempo de resposta de cada modo, consulta o uso de VRAM em `/api/ps` e exercita o cancelamento após três segundos. O teste pode manter o modelo carregado após uma requisição; use `Liberar VRAM` ou aguarde o `OLLAMA_KEEP_ALIVE` se quiser descarregar o modelo.
+
+> Não compare resultados do sandbox ou de outro computador. VRAM e desempenho só são significativos na máquina Windows que possui a GPU usada pelo Ollama.
 
 ## Solução de problemas
 
