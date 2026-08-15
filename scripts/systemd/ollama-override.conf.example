@@ -1,0 +1,38 @@
+# Template de override systemd para o serviço Ollama em VM Linux
+#
+# Copie para: /etc/systemd/system/ollama.service.d/override.conf
+# (crie o diretório se necessário: sudo mkdir -p /etc/systemd/system/ollama.service.d/)
+#
+# Após copiar, aplique com:
+#   sudo systemctl daemon-reload
+#   sudo systemctl restart ollama
+#   systemctl status ollama --no-pager
+#
+# IMPORTANTE:
+#   - Execute somente quem administra a VM.
+#   - Confirme que a VM possui GPU compatível ANTES de reiniciar, se aceleração for requisito.
+#   - Não exponha a porta 11434 publicamente sem TLS + autenticação + firewall.
+
+[Service]
+# Limita o contexto por requisição. Contextos maiores consomem mais VRAM.
+# Aumente apenas após confirmar margem livre com: nvidia-smi / rocm-smi / ollama ps
+Environment="OLLAMA_CONTEXT_LENGTH=4096"
+
+# Processa uma requisição por modelo. Aumente só com VRAM comprovadamente disponível.
+Environment="OLLAMA_NUM_PARALLEL=1"
+
+# Mantém no máximo um modelo carregado na VRAM. Preserve em GPUs pequenas.
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+
+# Libera o modelo da VRAM logo após responder (0 = imediato).
+# Alternativas: "30s", "2m", "10m" para reduzir latência com muitas requisições consecutivas.
+# Evite "-1" (mantém indefinidamente) em GPUs limitadas.
+Environment="OLLAMA_KEEP_ALIVE=0"
+
+# Bloqueia recursos cloud do Ollama; não substitui firewall ou política de rede.
+Environment="OLLAMA_NO_CLOUD=1"
+
+# Host de escuta: loopback quando bot e Ollama residem na mesma VM.
+# Troque para "0.0.0.0" SOMENTE se acesso externo for necessário
+# e depois de aplicar TLS + autenticação + firewall.
+Environment="OLLAMA_HOST=127.0.0.1:11434"

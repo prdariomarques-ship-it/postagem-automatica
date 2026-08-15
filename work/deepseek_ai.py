@@ -8,6 +8,19 @@ Suporte a quatro modos via AI_BACKEND:
 
 Modo local não requer chave de API. Nomes de modelo contendo ':cloud'
 ou terminados em '-cloud' são bloqueados quando AI_BACKEND=ollama.
+
+Variáveis de servidor Ollama (definidas no processo ollama serve / systemd):
+  OLLAMA_NUM_PARALLEL      requisições paralelas por modelo (recomendado: 1 em GPU limitada)
+  OLLAMA_MAX_LOADED_MODELS modelos simultâneos na VRAM    (recomendado: 1 em GPU limitada)
+  OLLAMA_KEEP_ALIVE        tempo de retenção na VRAM      ("0" libera imediatamente)
+  OLLAMA_NO_CLOUD          "1" bloqueia recursos cloud do servidor Ollama
+
+Variáveis de cliente (usadas por este módulo):
+  AI_BACKEND               ollama | deepseek | openai | auto
+  OLLAMA_HOST              endpoint do servidor (padrão: http://localhost:11434)
+  OLLAMA_MODEL             modelo local (padrão: qwen3:4b)
+  OLLAMA_CONTEXT_LENGTH    tokens de contexto por requisição (padrão: 4096)
+  OLLAMA_KEEP_ALIVE        também enviado por requisição quando definido
 """
 
 from __future__ import annotations
@@ -60,6 +73,12 @@ def _ollama_generate(prompt: str, system: str = "") -> str:
     }
     if system:
         payload["system"] = system
+
+    # Retenção de VRAM por requisição: "0" libera imediatamente, "-1" retém indefinidamente.
+    # Apenas substitui o padrão do servidor quando definido explicitamente no cliente.
+    keep_alive = os.environ.get("OLLAMA_KEEP_ALIVE")
+    if keep_alive is not None:
+        payload["keep_alive"] = keep_alive
 
     data_bytes = json.dumps(payload).encode()
     req = urllib.request.Request(

@@ -290,3 +290,108 @@ abra o app → clique no nome do modelo → escolha um modelo local da lista.
 - Nunca use `--no-verify` para contornar hooks git.
 - Nunca inicie o monitor com início automático no boot sem confirmação do usuário.
 - Não faça `git push` sem revisar `git diff --stat` primeiro.
+
+---
+
+## 11. Operação em VM Linux com systemd
+
+> **Distinção essencial:** hospedar o Ollama em uma VM é diferente de usar modelos Ollama Cloud.
+> Quando o bot e o Ollama residem na mesma VM e comunicam via `127.0.0.1`, a inferência
+> permanece dentro dessa VM. `OLLAMA_NO_CLOUD=1` bloqueia recursos cloud do Ollama;
+> não transforma a VM em infraestrutura gratuita nem adiciona GPU a ela.
+
+### Perfil conservador para GPU limitada
+
+Aplique como override do systemd — veja template em `scripts/systemd/ollama-override.conf.example`:
+
+```ini
+[Service]
+Environment="OLLAMA_CONTEXT_LENGTH=4096"
+Environment="OLLAMA_NUM_PARALLEL=1"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_KEEP_ALIVE=0"
+Environment="OLLAMA_NO_CLOUD=1"
+Environment="OLLAMA_HOST=127.0.0.1:11434"
+```
+
+| Variável | Valor inicial | Efeito |
+|----------|--------------|--------|
+| `OLLAMA_CONTEXT_LENGTH` | `4096` | Limita tokens de contexto; contextos maiores consomem mais VRAM |
+| `OLLAMA_NUM_PARALLEL` | `1` | Uma requisição por modelo; requisições paralelas multiplicam reserva de VRAM |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Um modelo na VRAM por vez |
+| `OLLAMA_KEEP_ALIVE` | `0` | Libera VRAM imediatamente após resposta. Use `"30s"` ou `"2m"` para reduzir latência em uso frequente; evite `"-1"` em GPU limitada |
+| `OLLAMA_NO_CLOUD` | `1` | Bloqueia recursos cloud do servidor |
+
+Aplicar e verificar:
+
+```bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d/
+sudo cp scripts/systemd/ollama-override.conf.example \
+       /etc/systemd/system/ollama.service.d/override.conf
+# Edite conforme necessário, depois:
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+systemctl status ollama --no-pager
+```
+
+**Não exponha a porta 11434 publicamente** sem TLS, autenticação e regras de firewall.
+
+### Telemetria de GPU durante inferência (Nvidia)
+
+Execute apenas enquanto uma inferência real estiver em curso; interrompa com `Ctrl+C`:
+
+```bash
+nvidia-smi \
+  --query-gpu=timestamp,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw \
+  --format=csv -l 1
+```
+
+Para registrar uma sessão:
+
+```bash
+nvidia-smi \
+  --query-gpu=timestamp,utilization.gpu,memory.used,memory.total,temperature.gpu \
+  --format=csv -l 1 \
+  | tee "logs/ollama-vram-$(date +%Y%m%d-%H%M%S).csv"
+```
+
+---
+
+## 12. Sequência de validação em camadas
+
+| Camada | Comando | O que confirma | O que não confirma |
+|--------|---------|---------------|-------------------|
+| 1. Testes isolados | `python3 tests/test_gerador_local.py` | Contrato de backend, bloqueios cloud | GPU, VRAM, modelo real |
+| 2. Inferência curta | `ollama run qwen3:4b "teste local confirmado."` | Servidor responde com modelo local | Que está na GPU |
+| 3. `ollama ps` | após a inferência acima | CPU/GPU/híbrido do modelo ativo | Temperatura, potência |
+| 4. Telemetria GPU | `nvidia-smi -l 1` durante inferência | VRAM, utilização, temperatura | Lógica de backend |
+
+Execute na ordem: 1 → 2 → 3 → 4. Uma falha na camada 1 invalida as camadas seguintes.
+
+---
+
+## 13. Checklist de aceite antes de implantar
+
+```
+[ ] VM possui recursos suficientes; GPU/driver validada se aceleração for requisito.
+[ ] Bot e Ollama comunicam via localhost/127.0.0.1 na mesma VM.
+[ ] AI_BACKEND=ollama e OLLAMA_NO_CLOUD=1 estão definidos.
+[ ] Nenhuma chave DeepSeek/OpenAI inserida no perfil local-only.
+[ ] Contexto 4K, 1 requisição paralela e 1 modelo carregado ativos inicialmente.
+[ ] OLLAMA_KEEP_ALIVE=0 escolhido para liberar VRAM automaticamente.
+[ ] python3 tests/test_gerador_local.py retornou 13/13 passando.
+[ ] Inferência curta respondeu com modelo local sem :cloud.
+[ ] ollama ps conferido durante a inferência.
+[ ] Porta 11434 não exposta publicamente sem controles adequados.
+[ ] Nenhuma alteração commitada/enviada sem revisão e confirmação humana.
+[ ] .env não está versionado (confirmar: git status | grep -v '\.env\.example').
+```
+
+---
+
+## Referências
+
+- Ollama FAQ: https://docs.ollama.com/faq
+- Ollama Context Length: https://docs.ollama.com/context-length
+- Ollama GPU: https://docs.ollama.com/gpu
+- Ollama API (keep_alive): https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-completion
