@@ -5,7 +5,9 @@
 | Versão | Descrição |
 |--------|-----------|
 | V3 (comparativa) | Artefatos opcionais para comparar Runspace e APM, sem substituir a V2 estável do aplicativo. |
-| V2 | Envio assíncrono com cancelamento seguro; janela permanece responsiva durante a inferência; correção de codificação UTF-8 com BOM mantida. |
+| V2.3 | Dark theme verde-escuro + stream em tempo real via Runspace. Tokens exibidos palavra a palavra; contador ao vivo; timeout de 90 s. |
+| V2.1 | Redesign da interface: tema escuro, paleta verde-escura (#0B1812), layout por camadas. |
+| V2 | Envio assíncrono com cancelamento seguro; janela permanece responsiva durante a inferência; codificação UTF-8 com BOM. |
 | V1 | Versão inicial com interface WinForms e envio síncrono. |
 
 Interface de linha de comando para usar o Ollama inteiramente local no Windows.
@@ -84,21 +86,57 @@ Pare com **Ctrl+C** quando terminar.
 - **Rede:** nenhum tráfego de saída além do loopback local.
 - **Git:** nenhum commit, push ou publicação automática.
 
+## Modelos recomendados (CPU-only, 16 GB RAM)
+
+Testado em 16/08/2026 com Ollama v0.32.9, CPU x86, VRAM = 0 GB.
+
+| Prioridade | Modelo | RAM (Q4) | Tempo médio | Notas |
+|------------|--------|----------|-------------|-------|
+| **1 — padrão** | `phi4-mini` | ~2,3 GB | **1,5–6 s** (quente) / ~17 s (frio) | 0 falhas; 3,7 tok/s; sem suporte a imagens |
+| 2 — multimodal | `qwen3.5:4b` | ~3,0 GB | ~17 s (quente) / ~37 s (frio) | Imagem + texto, 256K contexto; usar `num_predict ≥ 256` em análise de imagem |
+| 3 — alternativa | `qwen3:4b` | ~3,0 GB | 19 s | Thinking/rápido; instável com RAM cheia (3 timeouts) |
+| 4 — mais leve | `llama3.2:3b` | ~2,2 GB | — | Mais rápido; ideal para respostas curtas e tool calls |
+| 5 | `gemma3:4b` | ~3,0 GB | — | Multimodal; 140+ idiomas; já instalado |
+
+Para definir o modelo padrão permanentemente:
+```powershell
+[System.Environment]::SetEnvironmentVariable('OLLAMA_MODEL','phi4-mini','User')
+```
+
+Para instalar o phi4-mini:
+```
+ollama pull phi4-mini
+```
+
 ## Variáveis de ambiente respeitadas
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `OLLAMA_MODEL` | (nenhum) | Modelo pré-selecionado ao abrir a interface |
-| `OLLAMA_MAX_LOADED_MODELS` | 1 | Descarrega automaticamente o modelo anterior ao carregar um novo — recomendado em hardware com menos de 8 GB de RAM |
 | `OLLAMA_CONTEXT_LENGTH` | `2048` | Tokens de contexto por requisição (menor = menos RAM) |
+| `OLLAMA_KEEP_ALIVE` | `5m` (padrão Ollama) | Retenção do modelo na RAM; **não altere para 0** em uso sequencial — modelo quente responde 9× mais rápido (1,5 s vs 13 s) |
+| `OLLAMA_MAX_LOADED_MODELS` | `1` | Descarrega automaticamente o modelo anterior ao carregar um novo — recomendado em hardware com menos de 8 GB de RAM |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Endpoint do servidor (não altere para URL remota) |
 
-## Resposta em segundo plano (V2)
+## Análise de imagens
 
-A partir da V2, o envio de prompts **não bloqueia mais a janela** durante a geração da resposta. O aplicativo permanece totalmente responsivo enquanto o modelo processa.
+Apenas modelos multimodais aceitam imagens. O `phi4-mini` retorna erro 400 ao receber imagem — use o `qwen3.5:4b` ou `gemma3:4b`.
 
-- **Botão "Cancelar resposta":** interrompe a requisição HTTP em andamento imediatamente. O modelo, porém, pode continuar carregado na VRAM até que você use a opção **[4] Liberar VRAM** no menu.
-- **Timeout interno:** a requisição tem limite de **10 minutos**. Se o modelo não responder nesse prazo (ex.: modelo muito grande para a GPU), a interface cancela automaticamente e exibe mensagem de erro.
+| Situação | Procedimento |
+|----------|-------------|
+| Trocar para análise de imagem | Clique "Liberar VRAM", selecione `qwen3.5:4b` no menu |
+| Resposta vazia com imagem | Aumente `num_predict` para 256–512 no body da requisição |
+| Voltar ao chat normal | Clique "Liberar VRAM", selecione `phi4-mini` |
+
+O `OLLAMA_MAX_LOADED_MODELS=1` automatiza a descarga do modelo anterior ao trocar.
+
+## Stream em tempo real (V2.3)
+
+A partir da V2.3, as respostas são exibidas **palavra a palavra** assim que o modelo as gera, sem esperar o fim da inferência.
+
+- **Tokens ao vivo:** um contador no rodapé mostra quantos tokens foram gerados até o momento.
+- **Botão "Cancelar resposta":** interrompe a requisição HTTP imediatamente; a interface volta ao estado pronto em segundos.
+- **Timeout interno:** 90 segundos sem token novo cancela automaticamente e exibe mensagem de erro.
 - **Durante a geração:** o campo de prompt e o botão "Enviar" ficam desabilitados; apenas "Cancelar resposta" fica ativo.
 
 ## Modelos locais recomendados (CPU-only, 16 GB RAM — dados de 16/08/2026)
