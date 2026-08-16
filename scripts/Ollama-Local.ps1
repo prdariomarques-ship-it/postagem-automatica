@@ -8,7 +8,14 @@
   - Campo thinking do modelo exibido em âmbar com rótulo "raciocinio:".
   - num_predict mínimo de 256 quando imagem anexada (evita resposta vazia).
   - Validação de cabeçalho mágico (magic bytes) para JPEG, PNG e WEBP.
-  - Limite de 10 MB por imagem, com mensagem de erro amigável.
+  - Limite de 10 MB por imagem, com mensagem de erro amigavel.
+  - V2.5a — metricas reais do Ollama no rodape: tokens de saida, velocidade
+    (tok/s) e tempo de carga do modelo, obtidas do chunk final do stream.
+  - V2.5b — deteccao de modelo vision por capability (/api/show): ao anexar
+    imagem, o app procura o primeiro modelo local com capability 'vision';
+    qwen3.5:4b deixa de ser um nome fixo e vira apenas o padrao em cache.
+  - V2.5c — versao real do Ollama no cabecalho (GET /api/version), com
+    fallback silencioso se a API nao responder.
 
   Histórico:
   V2.3: Tema dark completo (#0B1812 / #0F2019) + stream Runspace + tokens ao vivo + timeout 90s.
@@ -43,6 +50,9 @@ $script:StreamActive        = $false
 $script:StreamWorker        = $null
 $script:AttachedImagePath   = $null
 $script:ThinkingHeaderShown = $false
+$script:Metrics             = $null
+$script:ModelCapabilities   = @{}
+$script:OllamaVersion       = ''
 
 # Contexto por sessão
 $env:OLLAMA_CONTEXT_LENGTH = '2048'
@@ -139,9 +149,50 @@ function Refresh-Models {
             $modelSelector.SelectedItem = $selected
         }
         else { $modelSelector.SelectedIndex = 0 }
+        if (-not $script:OllamaVersion) { Update-AppVersion }
         Update-LoadedStatus
     }
     catch { Set-AppStatus $_.Exception.Message $true }
+}
+
+# ---------------------------------------------------------------------------
+# Capability detection (/api/show) — modelo vision por capacidade, nao fixo
+# ---------------------------------------------------------------------------
+function Select-VisionModel {
+    # Cache local das capabilities por modelo — nao sondar a API a cada envio.
+    foreach ($candidate in @($modelSelector.Items)) {
+        if (-not $script:ModelCapabilities.ContainsKey([string]$candidate)) {
+            try {
+                $show = Invoke-LocalOllama -Path ("/api/show/" + [System.Uri]::EscapeDataString($candidate))
+                $caps = @()
+                if ($show.capabilities) { $caps = @($show.capabilities) }
+                $script:ModelCapabilities[[string]$candidate] = $caps
+            }
+            catch { $script:ModelCapabilities[[string]$candidate] = @() }
+        }
+    }
+    $chosen = $null
+    foreach ($candidate in @($modelSelector.Items)) {
+        $caps = $script:ModelCapabilities[[string]$candidate]
+        if ($caps -contains 'vision') { $chosen = [string]$candidate; break }
+    }
+    # Sem capability explicita: usa o padrao vision conhecido da plataforma.
+    if (-not $chosen -and $modelSelector.Items.Contains('qwen3.5:4b')) {
+        $chosen = 'qwen3.5:4b'
+    }
+    return $chosen
+}
+
+function Update-AppVersion {
+    # Sondagem unica da versao real do Ollama (GET /api/version). Fallback silencioso.
+    try {
+        $ver = Invoke-LocalOllama -Path '/api/version'
+        if ($ver -and $ver.version) {
+            $script:OllamaVersion = [string]$ver.version
+            $tagLabel.Text = "127.0.0.1:11434 · v$($script:OllamaVersion) · sem nuvem · sem chaves de API"
+        }
+    }
+    catch { $script:OllamaVersion = '' }
 }
 
 function Update-LoadedStatus {
@@ -224,6 +275,16 @@ function Start-StreamWorker {
                                 [void]$queue.Enqueue(@{ type = 'token'; text = $token.response })
                             }
                             if ($token.done -eq $true) {
+                                # Metricas reais do Ollama (chunk final do stream).
+                                # Duracoes em nanosegundos; 1 s = 10^9 ns.
+                                [void]$queue.Enqueue(@{ type = 'metrics'; props = @{
+                                    eval_count          = $token.eval_count
+                                    eval_duration       = $token.eval_duration
+                                    prompt_eval_count   = $token.prompt_eval_count
+                                    prompt_eval_duration= $token.prompt_eval_duration
+                                    load_duration       = $token.load_duration
+                                    total_duration      = $token.total_duration
+                                }})
                                 [void]$queue.Enqueue(@{ type = 'done' })
                                 $text = ''
                                 $partial.Clear()
@@ -297,11 +358,13 @@ function Send-Prompt {
             Set-AppStatus 'Arquivo de imagem nao encontrado. Clique no nome do arquivo para remover.' $true
             return
         }
-        if (-not $modelSelector.Items.Contains('qwen3.5:4b')) {
-            Set-AppStatus 'qwen3.5:4b nao instalado. Execute: ollama pull qwen3.5:4b' $true
+        # Deteccao por capability: procura o primeiro modelo local com 'vision'.
+        $visionModel = Select-VisionModel
+        if (-not $visionModel) {
+            Set-AppStatus 'Nenhum modelo com capability vision instalado. Execute: ollama pull qwen3.5:4b' $true
             return
         }
-        if ($model -ne 'qwen3.5:4b') {
+        if ($model -ne $visionModel) {
             Set-AppStatus "Descarregando $model para usar modelo multimodal..."
             try {
                 [void](Invoke-LocalOllama -Path '/api/generate' -Method POST -Body @{
@@ -309,8 +372,8 @@ function Send-Prompt {
                 })
                 Start-Sleep -Milliseconds 400
             } catch {}
-            $modelSelector.SelectedItem = 'qwen3.5:4b'
-            $model = 'qwen3.5:4b'
+            $modelSelector.SelectedItem = $visionModel
+            $model = $visionModel
         }
         $b64    = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:AttachedImagePath))
         $images = @($b64)
@@ -396,6 +459,9 @@ function Drain-TokenQueue {
                 $output.SelectionColor  = $output.ForeColor
                 $output.ScrollToCaret()
             }
+            elseif ($item.type -eq 'metrics') {
+                $script:Metrics = $item.props
+            }
             elseif ($item.type -eq 'done') {
                 Finish-LocalGeneration -Success $true
                 return
@@ -413,6 +479,28 @@ function Drain-TokenQueue {
     }
 }
 
+function Format-MetricSeconds ($Ns) {
+    if ($null -eq $Ns -or $Ns -le 0) { return '?' }
+    $s = [math]::Round($Ns / 1000000000, 1)
+    if ($s -lt 1) { return ([math]::Round($Ns / 1000000, 0).ToString() + ' ms') }
+    return ($s.ToString() + ' s')
+}
+
+function Show-Metrics {
+    $m = $script:Metrics
+    if (-not $m) { return }
+    $outTokens = if ($m.eval_count -gt 0) { $m.eval_count } else { '?' }
+    $toksPerSec = '?'
+    if ($m.eval_count -gt 0 -and $m.eval_duration -gt 0) {
+        $toksPerSec = [math]::Round($m.eval_count / ($m.eval_duration / 1000000000), 1).ToString()
+    }
+    $toks = if ($m.eval_count -gt 0) { ('Tokens: ' + $outTokens + ' · ' + $toksPerSec + ' tok/s') } else { ('Tokens: ' + $script:TokenCount) }
+    $load = Format-MetricSeconds $m.load_duration
+    $total = Format-MetricSeconds $m.total_duration
+    $tokenLabel.Text  = "$toks | Carga: $load | Total: $total"
+    $script:Metrics = $null
+}
+
 function Finish-LocalGeneration {
     param([bool]$Success, [string]$ErrorMessage = '')
 
@@ -422,12 +510,13 @@ function Finish-LocalGeneration {
     if ($Success) {
         $output.AppendText("`r`n")
         Write-ChatSegment "  -- $($script:TokenCount) tokens --`r`n`r`n" $script:TextDim
-        $tokenLabel.Text = "Tokens: $($script:TokenCount)"
+        Show-Metrics
         Set-AppStatus 'Resposta concluida.'
     }
     else {
         $output.AppendText("`r`n")
         Write-ChatSegment "  $ErrorMessage`r`n`r`n" $script:ErrClr
+        $script:Metrics = $null
         $tokenLabel.Text = ''
         Set-AppStatus 'A geracao nao foi concluida.' $true
     }
@@ -582,7 +671,7 @@ function Clear-AttachedImage {
 # INTERFACE
 # ---------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'Ollama Local V2.4 — Windows 11'
+$form.Text          = 'Ollama Local V2.5 — Windows 11'
 $form.Size          = New-Object System.Drawing.Size(980, 720)
 $form.MinimumSize   = New-Object System.Drawing.Size(800, 580)
 $form.StartPosition = 'CenterScreen'
