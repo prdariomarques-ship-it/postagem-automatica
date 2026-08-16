@@ -1,12 +1,22 @@
 ﻿<#
-  Ollama Local — aplicativo portátil para Windows 11.
+  Ollama Local V2.3 — aplicativo portátil para Windows 11.
   Política de rede: esta interface usa exclusivamente http://127.0.0.1:11434.
+
+  Novidades da V2.3:
+  - Tema dark completo (#0B1812 / #0F2019) com header, chat colorido e botões flat.
+  - Stream em thread separado (Runspace + ConcurrentQueue) preservado da V2.2.
+  - Tokens aparecem em tempo real durante a geração.
+  - Timeout de 90 s sem tokens com mensagem clara.
+  - Contagem de tokens exibida na tela (label ao vivo + rodapé pós-geração).
+  - Protege contra envio duplicado com $script:StreamActive.
+  - Economia de RAM: OLLAMA_CONTEXT_LENGTH=2048, OLLAMA_KEEP_ALIVE=0.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+# Paleta dark
 $script:OllamaBaseUrl = 'http://127.0.0.1:11434'
 $script:BgDeep    = [System.Drawing.ColorTranslator]::FromHtml('#0B1812')
 $script:BgPanel   = [System.Drawing.ColorTranslator]::FromHtml('#0F2019')
@@ -19,10 +29,20 @@ $script:TextDim   = [System.Drawing.ColorTranslator]::FromHtml('#6A9B82')
 $script:UserClr   = [System.Drawing.ColorTranslator]::FromHtml('#8BC4B0')
 $script:WarnClr   = [System.Drawing.ColorTranslator]::FromHtml('#E0A94B')
 $script:ErrClr    = [System.Drawing.ColorTranslator]::FromHtml('#E05C5C')
-$script:ActiveRequest = $null
-$script:ActiveAsync   = $null
-$script:ActiveModel   = $null
 
+# Estado do stream
+$script:ActiveModel  = $null
+$script:TokenCount   = 0
+$script:StreamActive = $false
+$script:StreamWorker = $null
+
+# Economia de RAM/VRAM para esta sessão
+$env:OLLAMA_CONTEXT_LENGTH = '2048'
+$env:OLLAMA_KEEP_ALIVE     = '0'
+
+# ---------------------------------------------------------------------------
+# HTTP helper (GET/POST simples — usado apenas para /api/tags e /api/ps)
+# ---------------------------------------------------------------------------
 function Invoke-LocalOllama {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -42,6 +62,9 @@ function Invoke-LocalOllama {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Chat — escrita colorida no RichTextBox
+# ---------------------------------------------------------------------------
 function Write-ChatSegment {
     param([string]$Text, [System.Drawing.Color]$Color, [System.Drawing.Font]$Font = $null)
     $output.SelectionStart  = $output.TextLength
@@ -64,14 +87,12 @@ function Add-UserMessage {
     $output.ScrollToCaret()
 }
 
-function Add-AiMessage {
-    param([string]$Model, [string]$Response, [int]$Tokens = 0)
+function Begin-AiResponse {
+    param([string]$Model)
     $bf = New-Object System.Drawing.Font($output.Font.FontFamily, $output.Font.Size, [System.Drawing.FontStyle]::Bold)
     Write-ChatSegment "  $Model`r`n" $script:Accent $bf
-    Write-ChatSegment "  $($Response.Trim())`r`n" $script:TextMain
-    $footer = if ($Tokens -gt 0) { "  -- $Tokens tokens --" } else { "  -- concluido --" }
-    Write-ChatSegment "$footer`r`n`r`n" $script:TextDim
     $bf.Dispose()
+    Write-ChatSegment "  " $script:TextMain
     $output.ScrollToCaret()
 }
 
@@ -81,12 +102,18 @@ function Add-SysMessage {
     $output.ScrollToCaret()
 }
 
+# ---------------------------------------------------------------------------
+# Status
+# ---------------------------------------------------------------------------
 function Set-AppStatus {
     param([string]$Text, [bool]$IsError = $false)
     $statusLabel.Text      = $Text
     $statusLabel.ForeColor = if ($IsError) { $script:ErrClr } else { $script:Accent }
 }
 
+# ---------------------------------------------------------------------------
+# Modelos
+# ---------------------------------------------------------------------------
 function Refresh-Models {
     try {
         Set-AppStatus 'Consultando modelos locais...'
@@ -129,88 +156,251 @@ function Update-LoadedStatus {
     catch { Set-AppStatus $_.Exception.Message $true }
 }
 
+# ---------------------------------------------------------------------------
+# Worker de stream (Runspace separado — nunca bloqueia a UI)
+# ---------------------------------------------------------------------------
+function Start-StreamWorker {
+    param($Shared)
+
+    Stop-StreamWorker
+
+    $scriptBlock = {
+        param($shared)
+        $queue   = $shared['Queue']
+        $baseUrl = $shared['BaseUrl']
+        $model   = $shared['Model']
+        $prompt  = $shared['Prompt']
+
+        try {
+            $uri     = "$baseUrl/api/generate"
+            $payload = @{ model = $model; prompt = $prompt; stream = $true; options = @{ num_ctx = 2048 } } | ConvertTo-Json -Depth 6 -Compress
+            $bytes   = [System.Text.Encoding]::UTF8.GetBytes($payload)
+            $request = [System.Net.HttpWebRequest]::Create($uri)
+            $request.Method           = 'POST'
+            $request.ContentType      = 'application/json'
+            $request.ContentLength    = $bytes.Length
+            $request.Timeout          = 600000
+            $request.ReadWriteTimeout = 600000
+
+            $rs = $request.GetRequestStream()
+            $rs.Write($bytes, 0, $bytes.Length)
+            $rs.Close()
+            $shared['Request'] = $request
+
+            $response = $request.GetResponse()
+            $reader   = New-Object System.IO.StreamReader($response.GetResponseStream())
+            $buffer   = New-Object char[] 4096
+            $partial  = New-Object System.Text.StringBuilder
+            $idle     = [System.Diagnostics.Stopwatch]::StartNew()
+
+            while ($shared['Active']) {
+                if ($reader.Peek() -ge 0) {
+                    $read = $reader.ReadBlock($buffer, 0, $buffer.Length)
+                    if ($read -gt 0) {
+                        [void]$partial.Append($buffer, 0, $read)
+                        $idle.Restart()
+                        $text = $partial.ToString()
+                        while ($text -match '(?s)(\{.*?\})') {
+                            $jsonText = $Matches[1]
+                            $text = $text.Substring($jsonText.Length)
+                            $partial.Clear()
+                            [void]$partial.Append($text)
+                            try { $token = ($jsonText | ConvertFrom-Json) } catch { continue }
+                            if ($token.response) {
+                                [void]$queue.Enqueue(@{ type = 'token'; text = $token.response })
+                            }
+                            if ($token.done -eq $true) {
+                                [void]$queue.Enqueue(@{ type = 'done' })
+                                $text = ''
+                                $partial.Clear()
+                                break
+                            }
+                        }
+                    }
+                }
+                else { Start-Sleep -Milliseconds 100 }
+
+                if ($idle.Elapsed.TotalSeconds -gt 90) {
+                    try { $request.Abort() } catch {}
+                    [void]$queue.Enqueue(@{
+                        type = 'error'
+                        text = 'Tempo limite sem tokens: o Ollama esta muito lento. Libere RAM, feche programas pesados ou escolha um modelo menor.'
+                    })
+                    break
+                }
+            }
+            $reader.Close()
+            $response.Close()
+        }
+        catch {
+            [void]$queue.Enqueue(@{ type = 'error'; text = $_.Exception.Message })
+        }
+        finally {
+            $shared['Finished'] = $true
+        }
+    }
+
+    $ps    = [powershell]::Create().AddScript($scriptBlock).AddArgument($Shared)
+    $async = $ps.BeginInvoke()
+    $script:StreamWorker = @{ Ps = $ps; Async = $async; Shared = $Shared }
+}
+
+function Stop-StreamWorker {
+    if ($script:StreamWorker) {
+        $script:StreamWorker.Shared['Active'] = $false
+        try {
+            if ($script:StreamWorker.Shared['Request']) {
+                $script:StreamWorker.Shared['Request'].Abort()
+            }
+        }
+        catch {}
+        try {
+            if ($script:StreamWorker.Async -and -not $script:StreamWorker.Async.IsCompleted) {
+                $script:StreamWorker.Ps.Stop()
+            }
+        }
+        catch {}
+        try { $script:StreamWorker.Ps.Dispose() } catch {}
+        $script:StreamWorker = $null
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Envio de prompt
+# ---------------------------------------------------------------------------
 function Send-Prompt {
     $model  = [string]$modelSelector.SelectedItem
     $prompt = $promptBox.Text.Trim()
+
+    if ($script:StreamActive) { Set-AppStatus 'Aguarde a resposta atual ou cancele primeiro.' $true; return }
     if (-not $model)  { Set-AppStatus 'Escolha um modelo antes de enviar.' $true; return }
     if (-not $prompt) { Set-AppStatus 'Escreva uma mensagem antes de enviar.' $true; return }
-    if ($script:ActiveAsync) { Set-AppStatus 'Aguarde a resposta atual ou cancele primeiro.' $true; return }
-    try {
-        $uri     = "$script:OllamaBaseUrl/api/generate"
-        $payload = @{ model = $model; prompt = $prompt; stream = $false } | ConvertTo-Json -Depth 6 -Compress
-        $bytes   = [System.Text.Encoding]::UTF8.GetBytes($payload)
-        $req     = [System.Net.HttpWebRequest]::Create($uri)
-        $req.Method           = 'POST'
-        $req.ContentType      = 'application/json'
-        $req.ContentLength    = $bytes.Length
-        $req.Timeout          = 600000
-        $req.ReadWriteTimeout = 600000
-        $rs = $req.GetRequestStream()
-        $rs.Write($bytes, 0, $bytes.Length)
-        $rs.Close()
-        $script:ActiveRequest = $req
-        $script:ActiveAsync   = $req.BeginGetResponse($null, $null)
-        $script:ActiveModel   = $model
-        $sendButton.Enabled   = $false
-        $cancelButton.Enabled = $true
-        $promptBox.Enabled    = $false
-        Set-AppStatus "Gerando com $model..."
-        Add-UserMessage -Prompt $prompt
-        $promptBox.Clear()
-        $generationTimer.Start()
+
+    $script:StreamActive  = $true
+    $sendButton.Enabled   = $false
+    $cancelButton.Enabled = $true
+    $promptBox.Enabled    = $false
+
+    $promptText          = $prompt
+    $promptBox.Clear()
+
+    $shared = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
+    $shared['BaseUrl']  = $script:OllamaBaseUrl
+    $shared['Model']    = $model
+    $shared['Prompt']   = $promptText
+    $shared['Active']   = $true
+    $shared['Finished'] = $false
+    $shared['Request']  = $null
+    $shared['Queue']    = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+
+    $script:ActiveModel = $model
+    $script:TokenCount  = 0
+    $tokenLabel.Text    = 'Tokens: 0'
+
+    Add-UserMessage -Prompt $promptText
+    Begin-AiResponse -Model $model
+
+    Start-StreamWorker -Shared $shared
+    Set-AppStatus "Gerando com $model..."
+    $promptTimer.Start()
+    $generationTimer.Start()
+}
+
+# ---------------------------------------------------------------------------
+# Consumidor de fila (chamado pelos timers, thread da UI)
+# ---------------------------------------------------------------------------
+function Drain-TokenQueue {
+    if (-not $script:StreamActive -or -not $script:StreamWorker) { return }
+
+    $shared = $script:StreamWorker.Shared
+    $queue  = $shared['Queue']
+
+    while ($queue.Count -gt 0) {
+        $item = $null
+        if ($queue.TryDequeue([ref]$item)) {
+            if ($item.type -eq 'token') {
+                $output.SelectionStart  = $output.TextLength
+                $output.SelectionLength = 0
+                $output.SelectionColor  = $script:TextMain
+                $output.AppendText($item.text)
+                $output.SelectionColor  = $output.ForeColor
+                $output.ScrollToCaret()
+                $script:TokenCount++
+                $tokenLabel.Text = "Tokens: $($script:TokenCount)"
+            }
+            elseif ($item.type -eq 'done') {
+                Finish-LocalGeneration -Success $true
+                return
+            }
+            elseif ($item.type -eq 'error') {
+                Finish-LocalGeneration -Success $false -ErrorMessage $item.text
+                return
+            }
+        }
+        else { break }
     }
-    catch {
-        Add-SysMessage "Erro ao iniciar: $($_.Exception.Message)" $script:ErrClr
-        Set-AppStatus 'A geracao nao foi iniciada.' $true
-        $script:ActiveRequest = $null
-        $script:ActiveAsync   = $null
-        $script:ActiveModel   = $null
+
+    if ($shared['Finished'] -and $queue.Count -eq 0) {
+        Finish-LocalGeneration -Success $false -ErrorMessage 'A geracao encerrou sem concluir a resposta.'
     }
 }
 
-function Complete-LocalGeneration {
-    if (-not $script:ActiveAsync -or -not $script:ActiveAsync.IsCompleted) { return }
+function Finish-LocalGeneration {
+    param([bool]$Success, [string]$ErrorMessage = '')
+
     $generationTimer.Stop()
-    try {
-        $resp   = $script:ActiveRequest.EndGetResponse($script:ActiveAsync)
-        $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
-        $json   = $reader.ReadToEnd()
-        $reader.Close(); $resp.Close()
-        $result = $json | ConvertFrom-Json
-        $tokens = if ($result.eval_count) { [int]$result.eval_count } else { 0 }
-        Add-AiMessage -Model $script:ActiveModel -Response $result.response -Tokens $tokens
+    $promptTimer.Stop()
+
+    if ($Success) {
+        $output.AppendText("`r`n")
+        Write-ChatSegment "  -- $($script:TokenCount) tokens --`r`n`r`n" $script:TextDim
+        $tokenLabel.Text = "Tokens: $($script:TokenCount)"
         Set-AppStatus 'Resposta concluida.'
     }
-    catch {
-        Add-SysMessage "Erro: $($_.Exception.Message)" $script:ErrClr
+    else {
+        $output.AppendText("`r`n")
+        Write-ChatSegment "  $ErrorMessage`r`n`r`n" $script:ErrClr
+        $tokenLabel.Text = ''
         Set-AppStatus 'A geracao nao foi concluida.' $true
     }
-    finally {
-        $script:ActiveRequest = $null
-        $script:ActiveAsync   = $null
-        $script:ActiveModel   = $null
-        $sendButton.Enabled   = $true
-        $cancelButton.Enabled = $false
-        $promptBox.Enabled    = $true
-        Update-LoadedStatus
-    }
-}
 
-function Cancel-LocalGeneration {
-    if (-not $script:ActiveRequest) { return }
-    try { $script:ActiveRequest.Abort() } catch {}
-    $generationTimer.Stop()
-    $script:ActiveRequest = $null
-    $script:ActiveAsync   = $null
+    $script:StreamActive  = $false
     $script:ActiveModel   = $null
+    $script:TokenCount    = 0
+    Stop-StreamWorker
     $sendButton.Enabled   = $true
     $cancelButton.Enabled = $false
     $promptBox.Enabled    = $true
-    Add-SysMessage 'Geracao cancelada. Modelo pode permanecer na VRAM — use Liberar VRAM se necessario.' $script:WarnClr
+    Update-LoadedStatus
+}
+
+function Cancel-LocalGeneration {
+    if (-not $script:StreamActive) { return }
+    try {
+        if ($script:StreamWorker -and $script:StreamWorker.Shared['Request']) {
+            $script:StreamWorker.Shared['Request'].Abort()
+        }
+    }
+    catch {}
+    $generationTimer.Stop()
+    $promptTimer.Stop()
+    $script:StreamActive  = $false
+    $script:ActiveModel   = $null
+    $script:TokenCount    = 0
+    Stop-StreamWorker
+    $sendButton.Enabled   = $true
+    $cancelButton.Enabled = $false
+    $promptBox.Enabled    = $true
+    $tokenLabel.Text      = ''
+    $output.AppendText("`r`n")
+    Write-ChatSegment "  Geracao cancelada. Modelo pode permanecer na VRAM — use Liberar VRAM.`r`n`r`n" $script:WarnClr
     Set-AppStatus 'Cancelado.'
     Update-LoadedStatus
 }
 
+# ---------------------------------------------------------------------------
+# VRAM / GGUF
+# ---------------------------------------------------------------------------
 function Release-Vram {
     $model = [string]$modelSelector.SelectedItem
     if (-not $model) { Set-AppStatus 'Nenhum modelo selecionado.' $true; return }
@@ -231,6 +421,7 @@ function Import-Gguf {
     $picker.Filter      = 'Modelos GGUF (*.gguf)|*.gguf|Todos os arquivos (*.*)|*.*'
     $picker.Multiselect = $false
     if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+
     Add-Type -AssemblyName Microsoft.VisualBasic
     $suggested = ([System.IO.Path]::GetFileNameWithoutExtension($picker.FileName).ToLowerInvariant() -replace '[^a-z0-9._-]', '-')
     $modelName = [Microsoft.VisualBasic.Interaction]::InputBox(
@@ -270,7 +461,7 @@ function Import-Gguf {
 # INTERFACE
 # ---------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'Ollama Local'
+$form.Text          = 'Ollama Local V2.3 — Windows 11'
 $form.Size          = New-Object System.Drawing.Size(980, 720)
 $form.MinimumSize   = New-Object System.Drawing.Size(800, 580)
 $form.StartPosition = 'CenterScreen'
@@ -361,11 +552,11 @@ function New-ToolBtn {
 
 $refreshButton = New-ToolBtn 'Atualizar modelos' '#163028' $script:TextMain
 $toolbar.Controls.Add($refreshButton)
-$statusButton = New-ToolBtn 'Ver status' '#163028' $script:TextMain
+$statusButton  = New-ToolBtn 'Ver status'        '#163028' $script:TextMain
 $toolbar.Controls.Add($statusButton)
-$releaseButton = New-ToolBtn 'Liberar VRAM' '#3A2510' $script:WarnClr
+$releaseButton = New-ToolBtn 'Liberar VRAM'      '#3A2510' $script:WarnClr
 $toolbar.Controls.Add($releaseButton)
-$importButton = New-ToolBtn 'Importar GGUF' '#112030' ([System.Drawing.ColorTranslator]::FromHtml('#7BBCE0'))
+$importButton  = New-ToolBtn 'Importar GGUF'     '#112030' ([System.Drawing.ColorTranslator]::FromHtml('#7BBCE0'))
 $toolbar.Controls.Add($importButton)
 $layout.Controls.Add($toolbar, 0, 1)
 
@@ -451,7 +642,7 @@ $clearButton.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
 $clearButton.BackColor = [System.Drawing.ColorTranslator]::FromHtml('#1A2A1A')
 $clearButton.ForeColor = $script:TextDim
 $clearButton.Padding   = New-Object System.Windows.Forms.Padding(10, 5, 10, 5)
-$clearButton.Margin    = New-Object System.Windows.Forms.Padding(0, 0, 20, 0)
+$clearButton.Margin    = New-Object System.Windows.Forms.Padding(0, 0, 14, 0)
 $clearButton.FlatAppearance.BorderSize = 0
 $bottomBar.Controls.Add($clearButton)
 
@@ -461,12 +652,25 @@ $statusLabel.AutoSize  = $true
 $statusLabel.ForeColor = $script:Accent
 $statusLabel.Padding   = New-Object System.Windows.Forms.Padding(0, 8, 0, 0)
 $bottomBar.Controls.Add($statusLabel)
+
+$tokenLabel = New-Object System.Windows.Forms.Label
+$tokenLabel.Text      = ''
+$tokenLabel.AutoSize  = $true
+$tokenLabel.ForeColor = $script:TextDim
+$tokenLabel.Padding   = New-Object System.Windows.Forms.Padding(14, 8, 0, 0)
+$bottomBar.Controls.Add($tokenLabel)
 $layout.Controls.Add($bottomBar, 0, 4)
 
-# Timer e eventos
+# ---------------------------------------------------------------------------
+# Timers e eventos
+# ---------------------------------------------------------------------------
+$promptTimer = New-Object System.Windows.Forms.Timer
+$promptTimer.Interval = 200
+$promptTimer.Add_Tick({ Drain-TokenQueue })
+
 $generationTimer = New-Object System.Windows.Forms.Timer
 $generationTimer.Interval = 200
-$generationTimer.Add_Tick({ Complete-LocalGeneration })
+$generationTimer.Add_Tick({ Drain-TokenQueue })
 
 $refreshButton.Add_Click({ Refresh-Models })
 $statusButton.Add_Click({ Update-LoadedStatus })
@@ -475,16 +679,19 @@ $importButton.Add_Click({ Import-Gguf })
 $sendButton.Add_Click({ Send-Prompt })
 $cancelButton.Add_Click({ Cancel-LocalGeneration })
 $clearButton.Add_Click({ $output.Clear() })
+
 $promptBox.Add_KeyDown({
     if ($_.Control -and $_.KeyCode -eq [System.Windows.Forms.Keys]::Enter) {
         $_.SuppressKeyPress = $true
         Send-Prompt
     }
 })
+
 $form.Add_FormClosing({
-    if ($script:ActiveRequest) { try { $script:ActiveRequest.Abort() } catch {} }
+    if ($script:StreamWorker) { Stop-StreamWorker }
 })
 
 Add-SysMessage 'Interface local iniciada. Comunicacao exclusiva com http://127.0.0.1:11434.' $script:Accent
+Add-SysMessage 'V2.3: stream em tempo real, tema dark, tokens ao vivo, timeout 90 s, contexto 2048.' $script:TextDim
 Refresh-Models
 [void]$form.ShowDialog()
