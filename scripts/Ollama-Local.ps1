@@ -7,6 +7,8 @@
   - Troca automática para qwen3.5:4b ao enviar imagem (phi4-mini rejeita imagens).
   - Campo thinking do modelo exibido em âmbar com rótulo "raciocinio:".
   - num_predict mínimo de 256 quando imagem anexada (evita resposta vazia).
+  - Validação de cabeçalho mágico (magic bytes) para JPEG, PNG e WEBP.
+  - Limite de 10 MB por imagem, com mensagem de erro amigável.
 
   Histórico:
   V2.3: Tema dark completo (#0B1812 / #0F2019) + stream Runspace + tokens ao vivo + timeout 90s.
@@ -534,8 +536,36 @@ function Select-ImageFile {
     $picker.Filter      = 'Imagens (*.jpg;*.jpeg;*.png;*.webp)|*.jpg;*.jpeg;*.png;*.webp|Todos os arquivos (*.*)|*.*'
     $picker.Multiselect = $false
     if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
-    $script:AttachedImagePath = $picker.FileName
-    $shortName = [System.IO.Path]::GetFileName($picker.FileName)
+
+    $path = $picker.FileName
+
+    # Limite de tamanho: 10 MB
+    $fileInfo = New-Object System.IO.FileInfo($path)
+    if ($fileInfo.Length -gt 10485760) {
+        Set-AppStatus ("Imagem muito grande (" + [math]::Round($fileInfo.Length / 1048576, 1) + " MB). Limite: 10 MB.") $true
+        return
+    }
+
+    # Validacao de cabecalho magico (magic bytes): JPEG / PNG / WEBP
+    $header = [byte[]]::new(12)
+    $fs = $null
+    try {
+        $fs = [System.IO.File]::OpenRead($path)
+        [void]$fs.Read($header, 0, 12)
+    } finally {
+        if ($fs) { $fs.Dispose() }
+    }
+    $isJpeg = ($header[0] -eq 0xFF) -and ($header[1] -eq 0xD8) -and ($header[2] -eq 0xFF)
+    $isPng  = ($header[0] -eq 0x89) -and ($header[1] -eq 0x50) -and ($header[2] -eq 0x4E) -and ($header[3] -eq 0x47)
+    $isWebp = ($header[0] -eq 0x52) -and ($header[1] -eq 0x49) -and ($header[2] -eq 0x46) -and ($header[3] -eq 0x46) `
+              -and ($header[8] -eq 0x57) -and ($header[9] -eq 0x45) -and ($header[10] -eq 0x42) -and ($header[11] -eq 0x50)
+    if (-not ($isJpeg -or $isPng -or $isWebp)) {
+        Set-AppStatus 'Formato invalido. Apenas JPEG, PNG e WEBP sao aceitos (assinatura de arquivo incorreta).' $true
+        return
+    }
+
+    $script:AttachedImagePath = $path
+    $shortName = [System.IO.Path]::GetFileName($path)
     if ($shortName.Length -gt 28) { $shortName = $shortName.Substring(0, 25) + '...' }
     $imageLabel.Text      = "[x] $shortName"
     $imageLabel.ForeColor = $script:WarnClr
