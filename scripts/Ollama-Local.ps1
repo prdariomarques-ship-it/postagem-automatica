@@ -1,15 +1,19 @@
 ﻿<#
-  Ollama Local V2.3 — aplicativo portátil para Windows 11.
+  Ollama Local V2.4 — aplicativo portátil para Windows 11.
   Política de rede: esta interface usa exclusivamente http://127.0.0.1:11434.
 
-  Novidades da V2.3:
-  - Tema dark completo (#0B1812 / #0F2019) com header, chat colorido e botões flat.
-  - Stream em thread separado (Runspace + ConcurrentQueue) preservado da V2.2.
-  - Tokens aparecem em tempo real durante a geração.
-  - Timeout de 90 s sem tokens com mensagem clara.
-  - Contagem de tokens exibida na tela (label ao vivo + rodapé pós-geração).
-  - Protege contra envio duplicado com $script:StreamActive.
-  - Economia de RAM: OLLAMA_CONTEXT_LENGTH=2048, OLLAMA_KEEP_ALIVE=0.
+  Novidades da V2.4:
+  - Suporte a análise de imagem: botão "Anexar imagem" na toolbar.
+  - Troca automática para qwen3.5:4b ao enviar imagem (phi4-mini rejeita imagens).
+  - Campo thinking do modelo exibido em âmbar com rótulo "raciocinio:".
+  - num_predict mínimo de 256 quando imagem anexada (evita resposta vazia).
+
+  Histórico:
+  V2.3: Tema dark completo (#0B1812 / #0F2019) + stream Runspace + tokens ao vivo + timeout 90s.
+  V2.2: Stream em thread separado (Runspace + ConcurrentQueue).
+  V2.1: Redesign dark, layout por camadas.
+  V2:   Envio assíncrono com cancelamento seguro.
+  V1:   Interface WinForms com envio síncrono.
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -31,14 +35,15 @@ $script:WarnClr   = [System.Drawing.ColorTranslator]::FromHtml('#E0A94B')
 $script:ErrClr    = [System.Drawing.ColorTranslator]::FromHtml('#E05C5C')
 
 # Estado do stream
-$script:ActiveModel  = $null
-$script:TokenCount   = 0
-$script:StreamActive = $false
-$script:StreamWorker = $null
+$script:ActiveModel         = $null
+$script:TokenCount          = 0
+$script:StreamActive        = $false
+$script:StreamWorker        = $null
+$script:AttachedImagePath   = $null
+$script:ThinkingHeaderShown = $false
 
-# Economia de RAM/VRAM para esta sessão
+# Contexto por sessão
 $env:OLLAMA_CONTEXT_LENGTH = '2048'
-$env:OLLAMA_KEEP_ALIVE     = '0'
 
 # ---------------------------------------------------------------------------
 # HTTP helper (GET/POST simples — usado apenas para /api/tags e /api/ps)
@@ -170,10 +175,14 @@ function Start-StreamWorker {
         $baseUrl = $shared['BaseUrl']
         $model   = $shared['Model']
         $prompt  = $shared['Prompt']
+        $images  = $shared['Images']
 
         try {
             $uri     = "$baseUrl/api/generate"
-            $payload = @{ model = $model; prompt = $prompt; stream = $true; options = @{ num_ctx = 2048 } } | ConvertTo-Json -Depth 6 -Compress
+            $options = if ($images) { @{ num_ctx = 2048; num_predict = 256 } } else { @{ num_ctx = 2048 } }
+            $body    = @{ model = $model; prompt = $prompt; stream = $true; options = $options }
+            if ($images) { $body['images'] = $images }
+            $payload = $body | ConvertTo-Json -Depth 6 -Compress
             $bytes   = [System.Text.Encoding]::UTF8.GetBytes($payload)
             $request = [System.Net.HttpWebRequest]::Create($uri)
             $request.Method           = 'POST'
@@ -206,6 +215,9 @@ function Start-StreamWorker {
                             $partial.Clear()
                             [void]$partial.Append($text)
                             try { $token = ($jsonText | ConvertFrom-Json) } catch { continue }
+                            if ($token.thinking) {
+                                [void]$queue.Enqueue(@{ type = 'thinking'; text = $token.thinking })
+                            }
                             if ($token.response) {
                                 [void]$queue.Enqueue(@{ type = 'token'; text = $token.response })
                             }
@@ -276,18 +288,48 @@ function Send-Prompt {
     if (-not $model)  { Set-AppStatus 'Escolha um modelo antes de enviar.' $true; return }
     if (-not $prompt) { Set-AppStatus 'Escreva uma mensagem antes de enviar.' $true; return }
 
-    $script:StreamActive  = $true
-    $sendButton.Enabled   = $false
-    $cancelButton.Enabled = $true
-    $promptBox.Enabled    = $false
+    # ---- Imagem anexada ----
+    $images = $null
+    if ($script:AttachedImagePath) {
+        if (-not [System.IO.File]::Exists($script:AttachedImagePath)) {
+            Set-AppStatus 'Arquivo de imagem nao encontrado. Clique no nome do arquivo para remover.' $true
+            return
+        }
+        if (-not $modelSelector.Items.Contains('qwen3.5:4b')) {
+            Set-AppStatus 'qwen3.5:4b nao instalado. Execute: ollama pull qwen3.5:4b' $true
+            return
+        }
+        if ($model -ne 'qwen3.5:4b') {
+            Set-AppStatus "Descarregando $model para usar modelo multimodal..."
+            try {
+                [void](Invoke-LocalOllama -Path '/api/generate' -Method POST -Body @{
+                    model = $model; prompt = ''; stream = $false; keep_alive = 0
+                })
+                Start-Sleep -Milliseconds 400
+            } catch {}
+            $modelSelector.SelectedItem = 'qwen3.5:4b'
+            $model = 'qwen3.5:4b'
+        }
+        $b64    = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:AttachedImagePath))
+        $images = @($b64)
+        Clear-AttachedImage
+    }
+    # ---- Fim imagem ----
 
-    $promptText          = $prompt
+    $script:StreamActive        = $true
+    $script:ThinkingHeaderShown = $false
+    $sendButton.Enabled         = $false
+    $cancelButton.Enabled       = $true
+    $promptBox.Enabled          = $false
+
+    $promptText = $prompt
     $promptBox.Clear()
 
     $shared = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
     $shared['BaseUrl']  = $script:OllamaBaseUrl
     $shared['Model']    = $model
     $shared['Prompt']   = $promptText
+    $shared['Images']   = $images
     $shared['Active']   = $true
     $shared['Finished'] = $false
     $shared['Request']  = $null
@@ -319,6 +361,14 @@ function Drain-TokenQueue {
         $item = $null
         if ($queue.TryDequeue([ref]$item)) {
             if ($item.type -eq 'token') {
+                if ($script:ThinkingHeaderShown) {
+                    $output.SelectionStart  = $output.TextLength
+                    $output.SelectionLength = 0
+                    $output.SelectionColor  = $script:WarnClr
+                    $output.AppendText("`r`n  resposta:`r`n  ")
+                    $output.SelectionColor  = $output.ForeColor
+                    $script:ThinkingHeaderShown = $false
+                }
                 $output.SelectionStart  = $output.TextLength
                 $output.SelectionLength = 0
                 $output.SelectionColor  = $script:TextMain
@@ -327,6 +377,22 @@ function Drain-TokenQueue {
                 $output.ScrollToCaret()
                 $script:TokenCount++
                 $tokenLabel.Text = "Tokens: $($script:TokenCount)"
+            }
+            elseif ($item.type -eq 'thinking') {
+                if (-not $script:ThinkingHeaderShown) {
+                    $output.SelectionStart  = $output.TextLength
+                    $output.SelectionLength = 0
+                    $output.SelectionColor  = $script:WarnClr
+                    $output.AppendText("raciocinio:`r`n")
+                    $output.SelectionColor  = $output.ForeColor
+                    $script:ThinkingHeaderShown = $true
+                }
+                $output.SelectionStart  = $output.TextLength
+                $output.SelectionLength = 0
+                $output.SelectionColor  = $script:WarnClr
+                $output.AppendText($item.text)
+                $output.SelectionColor  = $output.ForeColor
+                $output.ScrollToCaret()
             }
             elseif ($item.type -eq 'done') {
                 Finish-LocalGeneration -Success $true
@@ -364,9 +430,10 @@ function Finish-LocalGeneration {
         Set-AppStatus 'A geracao nao foi concluida.' $true
     }
 
-    $script:StreamActive  = $false
-    $script:ActiveModel   = $null
-    $script:TokenCount    = 0
+    $script:StreamActive        = $false
+    $script:ActiveModel         = $null
+    $script:TokenCount          = 0
+    $script:ThinkingHeaderShown = $false
     Stop-StreamWorker
     $sendButton.Enabled   = $true
     $cancelButton.Enabled = $false
@@ -384,9 +451,10 @@ function Cancel-LocalGeneration {
     catch {}
     $generationTimer.Stop()
     $promptTimer.Stop()
-    $script:StreamActive  = $false
-    $script:ActiveModel   = $null
-    $script:TokenCount    = 0
+    $script:StreamActive        = $false
+    $script:ActiveModel         = $null
+    $script:TokenCount          = 0
+    $script:ThinkingHeaderShown = $false
     Stop-StreamWorker
     $sendButton.Enabled   = $true
     $cancelButton.Enabled = $false
@@ -458,10 +526,33 @@ function Import-Gguf {
 }
 
 # ---------------------------------------------------------------------------
+# Imagem — seleção e limpeza
+# ---------------------------------------------------------------------------
+function Select-ImageFile {
+    $picker = New-Object System.Windows.Forms.OpenFileDialog
+    $picker.Title       = 'Selecionar imagem para analise'
+    $picker.Filter      = 'Imagens (*.jpg;*.jpeg;*.png;*.webp)|*.jpg;*.jpeg;*.png;*.webp|Todos os arquivos (*.*)|*.*'
+    $picker.Multiselect = $false
+    if ($picker.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    $script:AttachedImagePath = $picker.FileName
+    $shortName = [System.IO.Path]::GetFileName($picker.FileName)
+    if ($shortName.Length -gt 28) { $shortName = $shortName.Substring(0, 25) + '...' }
+    $imageLabel.Text      = "[x] $shortName"
+    $imageLabel.ForeColor = $script:WarnClr
+    Set-AppStatus "Imagem anexada (clique no nome para remover): $shortName"
+}
+
+function Clear-AttachedImage {
+    $script:AttachedImagePath = $null
+    $imageLabel.Text      = ''
+    $imageLabel.ForeColor = $script:TextDim
+}
+
+# ---------------------------------------------------------------------------
 # INTERFACE
 # ---------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'Ollama Local V2.3 — Windows 11'
+$form.Text          = 'Ollama Local V2.4 — Windows 11'
 $form.Size          = New-Object System.Drawing.Size(980, 720)
 $form.MinimumSize   = New-Object System.Drawing.Size(800, 580)
 $form.StartPosition = 'CenterScreen'
@@ -558,6 +649,17 @@ $releaseButton = New-ToolBtn 'Liberar VRAM'      '#3A2510' $script:WarnClr
 $toolbar.Controls.Add($releaseButton)
 $importButton  = New-ToolBtn 'Importar GGUF'     '#112030' ([System.Drawing.ColorTranslator]::FromHtml('#7BBCE0'))
 $toolbar.Controls.Add($importButton)
+$attachButton  = New-ToolBtn 'Anexar imagem'     '#1A2A12' ([System.Drawing.ColorTranslator]::FromHtml('#A8D890'))
+$toolbar.Controls.Add($attachButton)
+
+$imageLabel = New-Object System.Windows.Forms.Label
+$imageLabel.Text      = ''
+$imageLabel.AutoSize  = $true
+$imageLabel.ForeColor = $script:WarnClr
+$imageLabel.Cursor    = [System.Windows.Forms.Cursors]::Hand
+$imageLabel.Padding   = New-Object System.Windows.Forms.Padding(0, 8, 8, 0)
+$toolbar.Controls.Add($imageLabel)
+
 $layout.Controls.Add($toolbar, 0, 1)
 
 # Row 2 — Chat
@@ -676,6 +778,10 @@ $refreshButton.Add_Click({ Refresh-Models })
 $statusButton.Add_Click({ Update-LoadedStatus })
 $releaseButton.Add_Click({ Release-Vram })
 $importButton.Add_Click({ Import-Gguf })
+$attachButton.Add_Click({ Select-ImageFile })
+$imageLabel.Add_Click({
+    if ($script:AttachedImagePath) { Clear-AttachedImage; Set-AppStatus 'Imagem removida.' }
+})
 $sendButton.Add_Click({ Send-Prompt })
 $cancelButton.Add_Click({ Cancel-LocalGeneration })
 $clearButton.Add_Click({ $output.Clear() })
@@ -692,6 +798,6 @@ $form.Add_FormClosing({
 })
 
 Add-SysMessage 'Interface local iniciada. Comunicacao exclusiva com http://127.0.0.1:11434.' $script:Accent
-Add-SysMessage 'V2.3: stream em tempo real, tema dark, tokens ao vivo, timeout 90 s, contexto 2048.' $script:TextDim
+Add-SysMessage 'V2.4: imagem com qwen3.5:4b, thinking em ambar, stream em tempo real, tokens ao vivo.' $script:TextDim
 Refresh-Models
 [void]$form.ShowDialog()
