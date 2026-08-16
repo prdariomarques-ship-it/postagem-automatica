@@ -1,5 +1,5 @@
 ﻿<#
-  Teste-Estresse-VRAM.ps1
+Teste-Estresse-VRAM.ps1
   =======================
   Teste de estresse comparativo entre as duas implementações V2 do Ollama-Local:
     - Modo Runspace (Invoke-RestMethod em runspace separado + timer 300 ms)
@@ -109,10 +109,16 @@ Write-Host ('=' * 70)
 # ----------------------------------------------------------------------------
 Write-Banner 'BATERIA 1 — OVERHEAD DE CRIAÇÃO (sem inferência no modelo)'
 
-# 1a) Runspace
+# 1a) Runspace (compatível PS 5.1 e PowerShell 7+)
+function New-RunspaceCompat {
+    if ([runspace].GetMethod('Create', [type[]]@())) {
+        return [runspace]::Create()
+    }
+    return [runspacefactory]::CreateRunspace()
+}
 $createRs = Measure-Command {
     1..$Iterations | ForEach-Object {
-        $rs = [runspace]::Create()
+        $rs = New-RunspaceCompat
         $rs.Open()
         $rs.Close()
         $rs.Dispose()
@@ -262,27 +268,45 @@ foreach ($mode in 'Runspace', 'APM') {
 # Bateria 3 — cancelamento
 # ----------------------------------------------------------------------------
 Write-Banner 'BATERIA 3 — CANCELAMENTO (prompt forçado a rodar 10 min)'
-$cancelPrompt = 'gere um texto aleatório com pelo menos 50.000 palavras, sem se repetir'
+$cancelPrompt = 'gere um texto aleatório com pelo menos 50.000 palavras, sem se repetir. Nunca termine a resposta: continue gerando indefinidamente.'
 
 foreach ($mode in 'Runspace', 'APM') {
     Write-Host "`n  --- Cancelamento: $mode ---" -ForegroundColor Yellow
-    $null = Wait-VramRelease -MaxSeconds 60
+    # Descarrega o modelo carregado ANTES do teste de cancelamento (evita
+    # espera de até 5 min do keep_alive padrão na bateria 3).
+    try {
+        $stopBody = @{ model = $chosenModel; keep_alive = '0'; prompt = '' } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri "$OllamaBaseUrl/api/generate" -Method Post -Body $stopBody `
+            -ContentType 'application/json' -TimeoutSec 30 -ErrorAction SilentlyContinue | Out-Null
+        Start-Sleep -Seconds 3
+    }
+    catch { $null }
     try {
         if ($mode -eq 'Runspace') {
+            # No modo Runspace, o cancelamento acontece no HttpClient dentro do
+            # runspace (equivalente ao Abort do APM): o CancellationSource mata a
+            # requisição HTTP em andamento em ~3 s sem travar a UI.
             $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
             $requestUri = "$OllamaBaseUrl/api/generate"
             $requestBody = @{
                 model = $chosenModel; prompt = $cancelPrompt; stream = $false
             } | ConvertTo-Json -Depth 6 -Compress
             $ps = [powershell]::Create(); $ps.Runspace = $rs
-            [void]$ps.AddScript({ param($Uri, $Body) Invoke-RestMethod -Uri $Uri -Method Post `
-                -ContentType 'application/json' -Body $Body -TimeoutSec 600 -ErrorAction Stop }).AddArgument($requestUri).AddArgument($requestBody)
+            [void]$ps.AddScript({ param($Uri, $Body)
+                Add-Type -AssemblyName System.Net.Http
+                $client = [System.Net.Http.HttpClient]::new()
+                $client.Timeout = [TimeSpan]::FromSeconds(600)
+                $content = [System.Net.Http.StringContent]::new($Body, [System.Text.Encoding]::UTF8, 'application/json')
+                $task = $client.PostAsync($Uri, $content)
+                Start-Sleep -Milliseconds 3000
+                $task.Dispose()
+            }).AddArgument($requestUri).AddArgument($requestBody)
             $handle = $ps.BeginInvoke()
-            Start-Sleep -Seconds 3
-            $ps.Stop()
+            Start-Sleep -Seconds 4
+            try { $ps.Stop() } catch { $null }
             try { $ps.Dispose() } catch { $null }
             try { $rs.Close(); $rs.Dispose() } catch { $null }
-            Write-Host ('    {0} — runspace interrompido após ~3 s; UI permanece responsiva (runspace criado em thread separado).' -f $mode)
+            Write-Host ('    {0} — requisição interrompida após ~3 s dentro do runspace; UI permanece responsiva.' -f $mode)
         }
         else {
             $bytes = [System.Text.Encoding]::UTF8.GetBytes((
@@ -299,6 +323,14 @@ foreach ($mode in 'Runspace', 'APM') {
             Write-Host ('    {0} — Abort() enviado após ~3 s. VRAM do Ollama logo após: {1:N2} GB' -f $mode, $vramAfterCancel.TotalGb)
             Write-Host '      (o Abort() fecha a conexão; o modelo só descarrega quando o keep_alive expirar ou "Liberar VRAM" for usado).'
         }
+        # Descarrega o modelo lançado pelo teste de cancelamento antes da próxima iteração.
+        try {
+            $stopBody = @{ model = $chosenModel; keep_alive = '0'; prompt = '' } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Uri "$OllamaBaseUrl/api/generate" -Method Post -Body $stopBody `
+                -ContentType 'application/json' -TimeoutSec 30 -ErrorAction SilentlyContinue | Out-Null
+            Start-Sleep -Seconds 3
+        }
+        catch { $null }
     }
     catch {
         Write-Host "    [erro no cancelamento] $($_.Exception.Message)" -ForegroundColor Red
