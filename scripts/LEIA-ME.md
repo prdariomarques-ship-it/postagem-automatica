@@ -89,7 +89,8 @@ Pare com **Ctrl+C** quando terminar.
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `OLLAMA_MODEL` | (nenhum) | Modelo pré-selecionado ao abrir a interface |
-| `OLLAMA_CONTEXT_LENGTH` | `4096` | Tokens de contexto por requisição |
+| `OLLAMA_MAX_LOADED_MODELS` | 1 | Descarrega automaticamente o modelo anterior ao carregar um novo — recomendado em hardware com menos de 8 GB de RAM |
+| `OLLAMA_CONTEXT_LENGTH` | `2048` | Tokens de contexto por requisição (menor = menos RAM) |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Endpoint do servidor (não altere para URL remota) |
 
 ## Resposta em segundo plano (V2)
@@ -99,6 +100,19 @@ A partir da V2, o envio de prompts **não bloqueia mais a janela** durante a ger
 - **Botão "Cancelar resposta":** interrompe a requisição HTTP em andamento imediatamente. O modelo, porém, pode continuar carregado na VRAM até que você use a opção **[4] Liberar VRAM** no menu.
 - **Timeout interno:** a requisição tem limite de **10 minutos**. Se o modelo não responder nesse prazo (ex.: modelo muito grande para a GPU), a interface cancela automaticamente e exibe mensagem de erro.
 - **Durante a geração:** o campo de prompt e o botão "Enviar" ficam desabilitados; apenas "Cancelar resposta" fica ativo.
+
+## Modelos locais recomendados (CPU-only, 16 GB RAM — dados de 16/08/2026)
+
+| Modelo | RAM (Q4) | Uso | Latência medida |
+|--------|----------|-----|------------------|
+| `phi4-mini` | ~2,5 GB | **Padrão** — chat no dia a dia | 1,5–1,7 s (modelo na RAM) · 12 s (frio) |
+| `qwen3.5:4b` | ~2,9 GB | Multimodal — análise de **imagens** + contexto longo (256K) | 16,9 s imagem (64 tok) · 84 s (256 tok) |
+| `qwen3:4b` | ~3 GB | Alternativa de texto | 18,9 s médio · instável sob pressão de RAM |
+
+Observações importantes:
+- O **phi4-mini não analisa imagens** (rejeita requisições com imagem — erro 400). Para imagens, use o `qwen3.5:4b`.
+- Em tarefas de imagem, o `qwen3.5:4b` escreve a análise no campo interno de raciocínio (`thinking`). Na API, aumente `num_predict` para 256+ ou capture o `thinking` no stream.
+- Modelos na RAM respondem ~9× mais rápido. Use **[4] Liberar VRAM** (ou `keep_alive=0`) apenas quando precisar de RAM livre.
 
 ## Comparação opcional Runspace × APM (V3)
 
@@ -126,7 +140,7 @@ O teste utiliza somente os modelos locais listados pela API do Ollama e rejeita 
 | Problema | Causa provável | Solução |
 |----------|---------------|---------|
 | "Serviço Ollama não encontrado" | Ollama não está rodando | Abra o app Ollama ou execute `ollama serve` |
-| "Nenhum modelo instalado" | Sem modelos locais | `ollama pull qwen3:4b` (verifique espaço em disco) |
+| "Nenhum modelo instalado" | Sem modelos locais | `ollama pull phi4-mini` (verifique espaço em disco) |
 | Interface abre e fecha rápido | Erro de PowerShell | Execute `Abrir-Ollama-Local.cmd` pelo Prompt de Comando para ver a mensagem |
 | nvidia-smi não encontrado | Driver Nvidia não instalado | Instale o driver Nvidia; sem GPU usa CPU (mais lento) |
 | Modelo na CPU (100% CPU) | VRAM insuficiente | Use modelo menor ou feche outros aplicativos |
