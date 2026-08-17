@@ -1,6 +1,12 @@
 ﻿<#
-  Ollama Local V2.6 — aplicativo portátil para Windows 11.
+  Ollama Local V2.7 — aplicativo portátil para Windows 11.
   Política de rede: esta interface usa exclusivamente http://127.0.0.1:11434.
+
+  Novidades da V2.7:
+  - Frente B: painel de RAM em tempo real (off-thread via Runspace + ConcurrentQueue).
+    Mostra RAM livre / total e modelos em VRAM a cada 3 s sem travar a UI.
+    Alerta laranja (< 3 GB livre) e vermelho (< 1,5 GB). WMI via ManagementObjectSearcher
+    (seguro em Runspace sem importar modulos). GET /api/ps com timeout de 4 s.
 
   Novidades da V2.6:
   - Filtragem automatica de embeddings no seletor de modelos (erro 400 resolvido).
@@ -60,6 +66,8 @@ $script:ThinkingHeaderShown = $false
 $script:Metrics             = $null
 $script:ModelCapabilities   = @{}
 $script:OllamaVersion       = ''
+$script:MemMonitorWorker    = $null
+$script:MemMonitorShared    = $null
 
 # Contexto por sessão
 $env:OLLAMA_CONTEXT_LENGTH = '2048'
@@ -718,10 +726,111 @@ function Clear-AttachedImage {
 }
 
 # ---------------------------------------------------------------------------
+# Monitor de RAM (Runspace off-thread + ConcurrentQueue drenado por timer)
+# ---------------------------------------------------------------------------
+function Start-MemoryMonitor {
+    Stop-MemoryMonitor
+    $queue  = New-Object 'System.Collections.Concurrent.ConcurrentQueue[object]'
+    $shared = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
+    $shared['Active']  = $true
+    $shared['Queue']   = $queue
+    $shared['BaseUrl'] = $script:OllamaBaseUrl
+
+    $sb = {
+        param($shared)
+        $queue   = $shared['Queue']
+        $baseUrl = $shared['BaseUrl']
+        while ($shared['Active']) {
+            try {
+                # RAM via WMI — ManagementObjectSearcher e seguro em Runspace sem importar modulos.
+                $wmi = New-Object System.Management.ManagementObjectSearcher(
+                    'SELECT FreePhysicalMemory,TotalVisibleMemorySize FROM Win32_OperatingSystem')
+                $freeKB = 0; $totalKB = 0
+                foreach ($o in $wmi.Get()) {
+                    $freeKB  = [long]$o['FreePhysicalMemory']
+                    $totalKB = [long]$o['TotalVisibleMemorySize']
+                }
+                $wmi.Dispose()
+                $freeGB  = [math]::Round($freeKB  / 1048576, 1)
+                $totalGB = [math]::Round($totalKB / 1048576, 1)
+
+                # Modelos em VRAM via /api/ps (timeout curto — local)
+                $ps     = Invoke-RestMethod -Uri "$baseUrl/api/ps" -Method Get -TimeoutSec 4 -ErrorAction Stop
+                $models = @($ps.models)
+
+                [void]$queue.Enqueue(@{ type = 'ok'; freeGB = $freeGB; totalGB = $totalGB; models = $models })
+            }
+            catch {
+                [void]$queue.Enqueue(@{ type = 'err'; msg = $_.Exception.Message })
+            }
+            # Aguarda 3 s saindo imediatamente se Active = $false
+            for ($i = 0; $i -lt 30 -and $shared['Active']; $i++) { Start-Sleep -Milliseconds 100 }
+        }
+    }
+
+    $ps    = [powershell]::Create().AddScript($sb).AddArgument($shared)
+    $async = $ps.BeginInvoke()
+    $script:MemMonitorWorker = @{ Ps = $ps; Async = $async; Shared = $shared }
+    $script:MemMonitorShared = $shared
+}
+
+function Stop-MemoryMonitor {
+    if ($script:MemMonitorWorker) {
+        $script:MemMonitorWorker.Shared['Active'] = $false
+        try { $script:MemMonitorWorker.Ps.Dispose() } catch {}
+        $script:MemMonitorWorker = $null
+        $script:MemMonitorShared = $null
+    }
+}
+
+function Drain-MemoryQueue {
+    if (-not $script:MemMonitorShared) { return }
+    $queue = $script:MemMonitorShared['Queue']
+    $item  = $null
+    $last  = $null
+    while ($queue.TryDequeue([ref]$item)) { $last = $item }  # descarta intermediarios; usa o mais recente
+    if (-not $last) { return }
+
+    if ($last.type -eq 'ok') {
+        $freeGB  = $last.freeGB
+        $totalGB = $last.totalGB
+        $models  = $last.models
+
+        # Linha de modelos em memoria
+        if ($models.Count -gt 0) {
+            $mparts = foreach ($m in $models) {
+                $sz = if ($m.size_vram -and $m.size_vram -gt 0) {
+                    [math]::Round($m.size_vram / 1073741824, 2).ToString() + ' GB'
+                } else { 'CPU' }
+                "$($m.name) [$sz]"
+            }
+            $loadedLabel.Text = 'Em memoria: ' + ($mparts -join '  |  ')
+        }
+        else { $loadedLabel.Text = 'Nenhum modelo em memoria' }
+
+        # Linha de RAM com alerta por cor
+        $ramLabel.Text = "RAM livre: $freeGB GB / $totalGB GB total"
+        if ($freeGB -lt 1.5) {
+            $ramLabel.ForeColor = $script:ErrClr
+        }
+        elseif ($freeGB -lt 3.0) {
+            $ramLabel.ForeColor = $script:WarnClr
+        }
+        else {
+            $ramLabel.ForeColor = $script:TextDim
+        }
+    }
+    elseif ($last.type -eq 'err') {
+        $ramLabel.Text      = 'RAM: nao foi possivel ler'
+        $ramLabel.ForeColor = $script:ErrClr
+    }
+}
+
+# ---------------------------------------------------------------------------
 # INTERFACE
 # ---------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'Ollama Local V2.6 — Windows 11'
+$form.Text          = 'Ollama Local V2.7 — Windows 11'
 $form.Size          = New-Object System.Drawing.Size(980, 720)
 $form.MinimumSize   = New-Object System.Drawing.Size(800, 580)
 $form.StartPosition = 'CenterScreen'
@@ -738,7 +847,7 @@ $layout.RowCount    = 5
 $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 72)))
 $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
-$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 138)))
+$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 162)))
 $layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize)))
 $form.Controls.Add($layout)
 
@@ -863,6 +972,15 @@ $loadedLabel.ForeColor = $script:TextDim
 $loadedLabel.Font      = New-Object System.Drawing.Font('Segoe UI', 8.5)
 $inputArea.Controls.Add($loadedLabel)
 
+$ramLabel = New-Object System.Windows.Forms.Label
+$ramLabel.Text      = 'RAM: aguardando...'
+$ramLabel.Dock      = 'Top'
+$ramLabel.AutoSize  = $false
+$ramLabel.Height    = 20
+$ramLabel.ForeColor = $script:TextDim
+$ramLabel.Font      = New-Object System.Drawing.Font('Segoe UI', 8.5)
+$inputArea.Controls.Add($ramLabel)
+
 $promptBox = New-Object System.Windows.Forms.TextBox
 $promptBox.Dock        = 'Bottom'
 $promptBox.Multiline   = $true
@@ -943,6 +1061,11 @@ $generationTimer = New-Object System.Windows.Forms.Timer
 $generationTimer.Interval = 200
 $generationTimer.Add_Tick({ Drain-TokenQueue })
 
+$memDrainTimer = New-Object System.Windows.Forms.Timer
+$memDrainTimer.Interval = 500
+$memDrainTimer.Add_Tick({ Drain-MemoryQueue })
+$memDrainTimer.Start()
+
 $refreshButton.Add_Click({ Refresh-Models })
 $statusButton.Add_Click({ Update-LoadedStatus })
 $releaseButton.Add_Click({ Release-Vram })
@@ -964,9 +1087,11 @@ $promptBox.Add_KeyDown({
 
 $form.Add_FormClosing({
     if ($script:StreamWorker) { Stop-StreamWorker }
+    if ($script:MemMonitorWorker) { Stop-MemoryMonitor }
 })
 
 Add-SysMessage 'Interface local iniciada. Comunicacao exclusiva com http://127.0.0.1:11434.' $script:Accent
-Add-SysMessage 'V2.6: embeddings removidos do seletor (phi4-embedding, nomic, e5, bge). Sem erro 400.' $script:TextDim
+Add-SysMessage 'V2.7: painel RAM em tempo real (Runspace off-thread, 3 s). Alerta laranja < 3 GB, vermelho < 1,5 GB.' $script:TextDim
 Refresh-Models
+Start-MemoryMonitor
 [void]$form.ShowDialog()
