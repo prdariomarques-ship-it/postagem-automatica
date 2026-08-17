@@ -1,6 +1,13 @@
 ﻿<#
-  Ollama Local V2.4 — aplicativo portátil para Windows 11.
+  Ollama Local V2.6 — aplicativo portátil para Windows 11.
   Política de rede: esta interface usa exclusivamente http://127.0.0.1:11434.
+
+  Novidades da V2.6:
+  - Filtragem automatica de embeddings no seletor de modelos (erro 400 resolvido).
+    Modelos de embedding (phi4-embedding, nomic-embed-text, e5-*, bge-*, bert) sao
+    descartados da lista de chat. Deteccao por nome (fast-path) + /api/show (familia
+    e template). Fallback conservador: se nenhum modelo for detectado como chat, exibe
+    todos com aviso. Status mostra contagem: "X total — Y compativeis com chat."
 
   Novidades da V2.4:
   - Suporte a análise de imagem: botão "Anexar imagem" na toolbar.
@@ -129,18 +136,53 @@ function Set-AppStatus {
 }
 
 # ---------------------------------------------------------------------------
-# Modelos
+# Modelos — filtragem de embeddings
 # ---------------------------------------------------------------------------
+function Test-OllamaChatModel {
+    # Retorna $true se o modelo e generativo (chat), $false se for de embedding.
+    param([Parameter(Mandatory)][string]$ModelName)
+
+    # Fast-path: padroes de nome de embedding — sem chamada de API.
+    if ($ModelName -match '(?i)(embed|nomic-embed|phi4-embedding|e5-|bge-)') { return $false }
+
+    try {
+        $show   = Invoke-LocalOllama -Path ('/api/show/' + [System.Uri]::EscapeDataString($ModelName))
+        $family = if ($show.details -and $show.details.family) { [string]$show.details.family } else { '' }
+        if ($family -match '(?i)(bert|nomic|e5|bge|embed)') { return $false }
+
+        $tmpl = if ($show.template) { [string]$show.template } else { '' }
+        if ($tmpl -match '\{\{[\s-]*\.(Messages|Prompt|Question)[\s-]*\}\}') { return $true }
+        # Template vazio nao e indicador de embedding (ex.: GGUF importado sem Modelfile).
+        if ($tmpl.Length -eq 0) { return $true }
+        # Template existe mas sem marcadores de mensagem: descarta como embedding.
+        return $false
+    }
+    catch {
+        return $true  # Fallback conservador: exibe o modelo se nao for possivel verificar.
+    }
+}
+
 function Refresh-Models {
     try {
         Set-AppStatus 'Consultando modelos locais...'
         $tags     = Invoke-LocalOllama -Path '/api/tags'
         $selected = [string]$modelSelector.SelectedItem
         $modelSelector.Items.Clear()
+
+        $allNames  = @()
+        $chatNames = @()
         foreach ($item in @($tags.models | Sort-Object name)) {
             if ($item.name -match ':cloud$|-cloud:') { continue }
-            [void]$modelSelector.Items.Add($item.name)
+            $allNames += $item.name
+            if (Test-OllamaChatModel -ModelName $item.name) { $chatNames += $item.name }
         }
+
+        $total       = $allNames.Count
+        $chatCount   = $chatNames.Count
+        $useFallback = ($chatCount -eq 0 -and $total -gt 0)
+        $listToShow  = if ($useFallback) { $allNames } else { $chatNames }
+        foreach ($n in $listToShow) { [void]$modelSelector.Items.Add($n) }
+
         if ($modelSelector.Items.Count -eq 0) {
             Set-AppStatus 'Nenhum modelo local. Use "ollama pull <nome>" para baixar um.' $true
             return
@@ -149,8 +191,16 @@ function Refresh-Models {
             $modelSelector.SelectedItem = $selected
         }
         else { $modelSelector.SelectedIndex = 0 }
+
         if (-not $script:OllamaVersion) { Update-AppVersion }
         Update-LoadedStatus
+
+        if ($useFallback) {
+            Set-AppStatus ("Modelos no Ollama: $total — nenhum detectado como chat (exibindo todos).") $true
+        }
+        elseif ($total -ne $chatCount) {
+            Set-AppStatus ("Modelos no Ollama: $total — compativeis com chat: $chatCount. Embeddings descartados automaticamente.")
+        }
     }
     catch { Set-AppStatus $_.Exception.Message $true }
 }
@@ -671,7 +721,7 @@ function Clear-AttachedImage {
 # INTERFACE
 # ---------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'Ollama Local V2.5 — Windows 11'
+$form.Text          = 'Ollama Local V2.6 — Windows 11'
 $form.Size          = New-Object System.Drawing.Size(980, 720)
 $form.MinimumSize   = New-Object System.Drawing.Size(800, 580)
 $form.StartPosition = 'CenterScreen'
@@ -917,6 +967,6 @@ $form.Add_FormClosing({
 })
 
 Add-SysMessage 'Interface local iniciada. Comunicacao exclusiva com http://127.0.0.1:11434.' $script:Accent
-Add-SysMessage 'V2.4: imagem com qwen3.5:4b, thinking em ambar, stream em tempo real, tokens ao vivo.' $script:TextDim
+Add-SysMessage 'V2.6: embeddings removidos do seletor (phi4-embedding, nomic, e5, bge). Sem erro 400.' $script:TextDim
 Refresh-Models
 [void]$form.ShowDialog()
