@@ -2,13 +2,17 @@
 
 ## Changelog
 
-| Versão | Descrição |
-|--------|-----------|
-| V3 (comparativa) | Artefatos opcionais para comparar Runspace e APM, sem substituir a V2 estável do aplicativo. |
-| V2.3 | Dark theme verde-escuro + stream em tempo real via Runspace. Tokens exibidos palavra a palavra; contador ao vivo; timeout de 90 s. |
-| V2.1 | Redesign da interface: tema escuro, paleta verde-escura (#0B1812), layout por camadas. |
-| V2 | Envio assíncrono com cancelamento seguro; janela permanece responsiva durante a inferência; codificação UTF-8 com BOM. |
-| V1 | Versão inicial com interface WinForms e envio síncrono. |
+| Versão | Data | Descrição |
+|--------|------|-----------|
+| **V2.8** | 18/08/2026 | Cache de modelos (TTL 300 s) + histórico JSON (`historico.json`, 500 entradas) + log de sessão (`sessao_*.log`, 9 gatilhos). |
+| **V2.7** | 17/08/2026 | Painel de RAM em tempo real no rodapé (Runspace off-thread + WMI, poll 3 s). Alerta laranja < 3 GB, vermelho < 1,5 GB. |
+| **V2.6** | 17/08/2026 | Filtragem automática de embeddings no seletor (`Test-OllamaChatModel`). Fallback conservador se nenhum modelo for chat. |
+| **V2.5** | 16/08/2026 | Métricas reais do Ollama no rodapé (tokens, tok/s, tempo de carga). Detecção de modelo vision por `/api/show` (capability). Versão real do Ollama no cabeçalho. |
+| **V2.4** | 16/08/2026 | Suporte a análise de imagem: botão "Anexar imagem", troca automática para modelo vision, validação de magic bytes (JPEG/PNG/WEBP), limite de 10 MB. |
+| V2.3 | — | Dark theme verde-escuro + stream em tempo real via Runspace. Tokens palavra a palavra; contador ao vivo; timeout 90 s. |
+| V2.1 | — | Redesign da interface: tema escuro, paleta verde-escura (#0B1812), layout por camadas. |
+| V2 | — | Envio assíncrono com cancelamento seguro; janela permanece responsiva durante a inferência; UTF-8 com BOM. |
+| V1 | — | Versão inicial com interface WinForms e envio síncrono. |
 
 Interface de linha de comando para usar o Ollama inteiramente local no Windows.
 Sem nuvem, sem chaves de API, sem instaladores adicionais.
@@ -33,6 +37,8 @@ Sem nuvem, sem chaves de API, sem instaladores adicionais.
 | `Monitorar-VRAM.cmd` | Monitor ao vivo de VRAM e GPU. Abra em janela separada durante inferência. |
 | `Ollama-Local-V3-DuallMode.ps1` | Interface opcional de comparação, iniciada com `-Mode Runspace` ou `-Mode APM`. Não substitui `Ollama-Local.ps1`. |
 | `Teste-Estresse-VRAM.ps1` | Bateria comparativa local de tempo, VRAM e cancelamento entre os modos Runspace e APM. |
+| `historico.json` | Gerado automaticamente (V2.8). Histórico de todas as trocas: role, content, modelo, tokens, tok/s, tempos. Máximo de 500 entradas; rotação automática. |
+| `sessao_YYYYMMDD-HHmmss.log` | Gerado automaticamente (V2.8). Um arquivo por execução do app, com 9 gatilhos logados (envio, swap, alerta RAM, etc.). |
 | `LEIA-ME.md` | Este arquivo. |
 
 ## Como usar
@@ -86,17 +92,17 @@ Pare com **Ctrl+C** quando terminar.
 - **Rede:** nenhum tráfego de saída além do loopback local.
 - **Git:** nenhum commit, push ou publicação automática.
 
-## Modelos recomendados (CPU-only, 16 GB RAM)
+## Modelos recomendados (CPU-only, 15,9 GB RAM)
 
-Testado em 16/08/2026 com Ollama v0.32.9, CPU x86, VRAM = 0 GB.
+Medições na máquina: Ollama v0.32.9, CPU x86, sem GPU (VRAM = 0 GB), Windows 11.
 
-| Prioridade | Modelo | RAM (Q4) | Tempo médio | Notas |
-|------------|--------|----------|-------------|-------|
-| **1 — padrão** | `phi4-mini` | ~2,3 GB | **1,5–6 s** (quente) / ~17 s (frio) | 0 falhas; 3,7 tok/s; sem suporte a imagens |
-| 2 — multimodal | `qwen3.5:4b` | ~3,0 GB | ~17 s (quente) / ~37 s (frio) | Imagem + texto, 256K contexto; usar `num_predict ≥ 256` em análise de imagem |
-| 3 — alternativa | `qwen3:4b` | ~3,0 GB | 19 s | Thinking/rápido; instável com RAM cheia (3 timeouts) |
-| 4 — mais leve | `llama3.2:3b` | ~2,2 GB | — | Mais rápido; ideal para respostas curtas e tool calls |
-| 5 | `gemma3:4b` | ~3,0 GB | — | Multimodal; 140+ idiomas; já instalado |
+| Prioridade | Modelo | RAM (Q4) | Quente | Frio | tok/s | Notas |
+|------------|--------|----------|--------|------|-------|-------|
+| **1 — padrão** | `phi4-mini` | ~2,3 GB | **1,5–6 s** | ~17 s | 3,7 | 0 falhas (16/08); sem suporte a imagens |
+| 2 — multimodal | `qwen3.5:4b` | ~3,0 GB | ~17 s | ~37 s | a medir — 18/08 | Imagem + texto, 256K contexto; `num_predict ≥ 256` para imagem |
+| 3 — alternativa | `qwen3:4b` | ~3,0 GB | 19 s | a medir — 18/08 | a medir — 18/08 | Thinking; instável com RAM < 3 GB (3 timeouts em 16/08) |
+| 4 — mais leve | `llama3.2:3b` | ~2,2 GB | a medir — 18/08 | a medir — 18/08 | a medir — 18/08 | Ideal para respostas curtas e tool calls |
+| 5 | `gemma3:4b` | ~3,0 GB | a medir — 18/08 | a medir — 18/08 | a medir — 18/08 | Multimodal; 140+ idiomas |
 
 Para definir o modelo padrão permanentemente:
 ```powershell
@@ -139,13 +145,13 @@ A partir da V2.3, as respostas são exibidas **palavra a palavra** assim que o m
 - **Timeout interno:** 90 segundos sem token novo cancela automaticamente e exibe mensagem de erro.
 - **Durante a geração:** o campo de prompt e o botão "Enviar" ficam desabilitados; apenas "Cancelar resposta" fica ativo.
 
-## Modelos locais recomendados (CPU-only, 16 GB RAM — dados de 16/08/2026)
+## Modelos locais recomendados (CPU-only, 15,9 GB RAM — dados de 16/08/2026)
 
 | Modelo | RAM (Q4) | Uso | Latência medida |
 |--------|----------|-----|------------------|
-| `phi4-mini` | ~2,5 GB | **Padrão** — chat no dia a dia | 1,5–1,7 s (modelo na RAM) · 12 s (frio) |
-| `qwen3.5:4b` | ~2,9 GB | Multimodal — análise de **imagens** + contexto longo (256K) | 16,9 s imagem (64 tok) · 84 s (256 tok) |
-| `qwen3:4b` | ~3 GB | Alternativa de texto | 18,9 s médio · instável sob pressão de RAM |
+| `phi4-mini` | ~2,3 GB | **Padrão** — chat no dia a dia | 1,5–6 s (quente) · ~17 s (frio) · 3,7 tok/s |
+| `qwen3.5:4b` | ~3,0 GB | Multimodal — análise de **imagens** + contexto longo (256K) | ~17 s quente · ~37 s frio · a medir — 18/08 |
+| `qwen3:4b` | ~3,0 GB | Alternativa de texto com thinking | 19 s médio · instável sob RAM < 3 GB |
 
 Observações importantes:
 - O **phi4-mini não analisa imagens** (rejeita requisições com imagem — erro 400). Para imagens, use o `qwen3.5:4b`.
