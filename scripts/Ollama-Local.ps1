@@ -1,6 +1,13 @@
 ﻿<#
-  Ollama Local V2.7 — aplicativo portátil para Windows 11.
+  Ollama Local V2.8 — aplicativo portátil para Windows 11.
   Política de rede: esta interface usa exclusivamente http://127.0.0.1:11434.
+
+  Novidades da V2.8:
+  - Frente E Parte 1: cache de modelos com TTL de 300 s.
+    /api/tags e /api/show sao armazenados em $script:ModelCacheTags e
+    $script:ShowCache. Refresh-Models aceita -Force para re-fetch imediato.
+    O botao "Atualizar modelos" sempre passa -Force. Ao renovar, invalida
+    ShowCache e ModelCapabilities para evitar dados obsoletos.
 
   Novidades da V2.7:
   - Frente B: painel de RAM em tempo real (off-thread via Runspace + ConcurrentQueue).
@@ -68,6 +75,9 @@ $script:ModelCapabilities   = @{}
 $script:OllamaVersion       = ''
 $script:MemMonitorWorker    = $null
 $script:MemMonitorShared    = $null
+$script:ModelCacheTags = $null
+$script:ModelCacheTime = [DateTime]::MinValue
+$script:ShowCache      = @{}
 
 # Contexto por sessão
 $env:OLLAMA_CONTEXT_LENGTH = '2048'
@@ -147,33 +157,40 @@ function Set-AppStatus {
 # Modelos — filtragem de embeddings
 # ---------------------------------------------------------------------------
 function Test-OllamaChatModel {
-    # Retorna $true se o modelo e generativo (chat), $false se for de embedding.
     param([Parameter(Mandatory)][string]$ModelName)
-
-    # Fast-path: padroes de nome de embedding — sem chamada de API.
     if ($ModelName -match '(?i)(embed|nomic-embed|phi4-embedding|e5-|bge-)') { return $false }
-
     try {
-        $show   = Invoke-LocalOllama -Path ('/api/show/' + [System.Uri]::EscapeDataString($ModelName))
+        $show = if ($script:ShowCache.ContainsKey($ModelName)) {
+            $script:ShowCache[$ModelName]
+        }
+        else {
+            $r = Invoke-LocalOllama -Path ('/api/show/' + [System.Uri]::EscapeDataString($ModelName))
+            $script:ShowCache[$ModelName] = $r
+            $r
+        }
         $family = if ($show.details -and $show.details.family) { [string]$show.details.family } else { '' }
         if ($family -match '(?i)(bert|nomic|e5|bge|embed)') { return $false }
-
         $tmpl = if ($show.template) { [string]$show.template } else { '' }
         if ($tmpl -match '\{\{[\s-]*\.(Messages|Prompt|Question)[\s-]*\}\}') { return $true }
-        # Template vazio nao e indicador de embedding (ex.: GGUF importado sem Modelfile).
         if ($tmpl.Length -eq 0) { return $true }
-        # Template existe mas sem marcadores de mensagem: descarta como embedding.
         return $false
     }
-    catch {
-        return $true  # Fallback conservador: exibe o modelo se nao for possivel verificar.
-    }
+    catch { return $true }
 }
 
 function Refresh-Models {
+    param([switch]$Force)
     try {
-        Set-AppStatus 'Consultando modelos locais...'
-        $tags     = Invoke-LocalOllama -Path '/api/tags'
+        $now   = [DateTime]::UtcNow
+        $stale = ($now - $script:ModelCacheTime).TotalSeconds -gt 300
+        if ($Force -or $stale -or -not $script:ModelCacheTags) {
+            Set-AppStatus 'Consultando modelos locais...'
+            $script:ModelCacheTags    = Invoke-LocalOllama -Path '/api/tags'
+            $script:ModelCacheTime    = $now
+            $script:ShowCache         = @{}
+            $script:ModelCapabilities = @{}
+        }
+        $tags     = $script:ModelCacheTags
         $selected = [string]$modelSelector.SelectedItem
         $modelSelector.Items.Clear()
 
@@ -203,11 +220,15 @@ function Refresh-Models {
         if (-not $script:OllamaVersion) { Update-AppVersion }
         Update-LoadedStatus
 
+        $cacheSuffix = if (-not $Force -and -not $stale -and $script:ModelCacheTags) { ' (cache)' } else { '' }
         if ($useFallback) {
             Set-AppStatus ("Modelos no Ollama: $total — nenhum detectado como chat (exibindo todos).") $true
         }
         elseif ($total -ne $chatCount) {
-            Set-AppStatus ("Modelos no Ollama: $total — compativeis com chat: $chatCount. Embeddings descartados automaticamente.")
+            Set-AppStatus ("Modelos no Ollama: $total — compativeis com chat: $chatCount$cacheSuffix. Embeddings descartados.")
+        }
+        else {
+            Set-AppStatus "Ollama local disponivel. Modelos: $total$cacheSuffix."
         }
     }
     catch { Set-AppStatus $_.Exception.Message $true }
@@ -830,7 +851,7 @@ function Drain-MemoryQueue {
 # INTERFACE
 # ---------------------------------------------------------------------------
 $form = New-Object System.Windows.Forms.Form
-$form.Text          = 'Ollama Local V2.7 — Windows 11'
+$form.Text          = 'Ollama Local V2.8 — Windows 11'
 $form.Size          = New-Object System.Drawing.Size(980, 720)
 $form.MinimumSize   = New-Object System.Drawing.Size(800, 580)
 $form.StartPosition = 'CenterScreen'
@@ -1066,7 +1087,7 @@ $memDrainTimer.Interval = 500
 $memDrainTimer.Add_Tick({ Drain-MemoryQueue })
 $memDrainTimer.Start()
 
-$refreshButton.Add_Click({ Refresh-Models })
+$refreshButton.Add_Click({ Refresh-Models -Force })
 $statusButton.Add_Click({ Update-LoadedStatus })
 $releaseButton.Add_Click({ Release-Vram })
 $importButton.Add_Click({ Import-Gguf })
@@ -1091,7 +1112,7 @@ $form.Add_FormClosing({
 })
 
 Add-SysMessage 'Interface local iniciada. Comunicacao exclusiva com http://127.0.0.1:11434.' $script:Accent
-Add-SysMessage 'V2.7: painel RAM em tempo real (Runspace off-thread, 3 s). Alerta laranja < 3 GB, vermelho < 1,5 GB.' $script:TextDim
+Add-SysMessage 'V2.8: cache de modelos 300 s + historico JSON + log de sessao. V2.7: painel RAM off-thread.' $script:TextDim
 Refresh-Models
 Start-MemoryMonitor
 [void]$form.ShowDialog()
