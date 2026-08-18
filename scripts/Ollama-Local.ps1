@@ -12,6 +12,10 @@
     Cada troca grava dois objetos: {role:user} e {role:assistant} com
     timestamp UTC, modelo, tokens, tok/s, load_s e total_s. Limite de
     500 entradas com rotacao automatica. Erros de gravacao sao silenciosos.
+  - Frente E Parte 3: log de sessao (sessao_YYYYMMDD-HHmmss.log).
+    Gatilhos: INICIO, ENVIO, SWAP_MODELO, RESPOSTA_OK, RESPOSTA_ERRO,
+    CANCELADO, LIBERAR_VRAM, ALERTA_RAM (uma vez por transicao de nivel),
+    FECHAMENTO. Todos silenciosos (catch vazio).
 
   Novidades da V2.7:
   - Frente B: painel de RAM em tempo real (off-thread via Runspace + ConcurrentQueue).
@@ -85,6 +89,9 @@ $script:ShowCache      = @{}
 $script:HistoricoPath  = Join-Path $PSScriptRoot 'historico.json'
 $script:LastPrompt     = ''
 $script:ResponseBuffer = New-Object System.Text.StringBuilder
+$script:LogPath        = Join-Path $PSScriptRoot ("sessao_" + [DateTime]::Now.ToString('yyyyMMdd-HHmmss') + ".log")
+$script:SendStartTime  = $null
+$script:LastRamAlert   = ''
 
 # Contexto por sessão
 $env:OLLAMA_CONTEXT_LENGTH = '2048'
@@ -452,6 +459,7 @@ function Send-Prompt {
         }
         if ($model -ne $visionModel) {
             Set-AppStatus "Descarregando $model para usar modelo multimodal..."
+            Write-Log 'SWAP_MODELO' "de=$model para=$visionModel motivo=imagem_anexada"
             try {
                 [void](Invoke-LocalOllama -Path '/api/generate' -Method POST -Body @{
                     model = $model; prompt = ''; stream = $false; keep_alive = 0
@@ -474,8 +482,10 @@ function Send-Prompt {
     $promptBox.Enabled          = $false
 
     $promptText = $prompt
-    $script:LastPrompt = $promptText
+    $script:LastPrompt    = $promptText
+    $script:SendStartTime = [DateTime]::Now
     [void]$script:ResponseBuffer.Clear()
+    Write-Log 'ENVIO' "modelo=$model prompt_chars=$($promptText.Length)"
     $promptBox.Clear()
 
     $shared = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
@@ -600,12 +610,16 @@ function Finish-LocalGeneration {
         $output.AppendText("`r`n")
         Write-ChatSegment "  -- $($script:TokenCount) tokens --`r`n`r`n" $script:TextDim
         Save-Historico -Prompt $script:LastPrompt -Response $script:ResponseBuffer.ToString() -Model $script:ActiveModel -Metrics $script:Metrics
+        $elap = if ($script:SendStartTime) { [math]::Round(([DateTime]::Now - $script:SendStartTime).TotalSeconds, 1) } else { '?' }
+        $toks = if ($script:Metrics -and $script:Metrics.eval_count -gt 0) { $script:Metrics.eval_count } else { $script:TokenCount }
+        Write-Log 'RESPOSTA_OK' "modelo=$($script:ActiveModel) tokens=$toks total_s=$elap"
         Show-Metrics
         Set-AppStatus 'Resposta concluida.'
     }
     else {
         $output.AppendText("`r`n")
         Write-ChatSegment "  $ErrorMessage`r`n`r`n" $script:ErrClr
+        Write-Log 'RESPOSTA_ERRO' $ErrorMessage
         $script:Metrics = $null
         $tokenLabel.Text = ''
         Set-AppStatus 'A geracao nao foi concluida.' $true
@@ -643,6 +657,7 @@ function Cancel-LocalGeneration {
     $tokenLabel.Text      = ''
     $output.AppendText("`r`n")
     Write-ChatSegment "  Geracao cancelada. Modelo pode permanecer na VRAM — use Liberar VRAM.`r`n`r`n" $script:WarnClr
+    Write-Log 'CANCELADO' "modelo=$($script:ActiveModel) tokens_ate_cancel=$($script:TokenCount)"
     Set-AppStatus 'Cancelado.'
     Update-LoadedStatus
 }
@@ -659,6 +674,7 @@ function Release-Vram {
             model = $model; prompt = ''; stream = $false; keep_alive = 0
         })
         Start-Sleep -Milliseconds 600
+        Write-Log 'LIBERAR_VRAM' "modelo=$model"
         Update-LoadedStatus
     }
     catch { Set-AppStatus $_.Exception.Message $true }
@@ -755,6 +771,19 @@ function Clear-AttachedImage {
     $script:AttachedImagePath = $null
     $imageLabel.Text      = ''
     $imageLabel.ForeColor = $script:TextDim
+}
+
+# ---------------------------------------------------------------------------
+# Log de sessão (sessao_YYYYMMDD-HHmmss.log na pasta da app)
+# ---------------------------------------------------------------------------
+function Write-Log {
+    param([string]$Event, [string]$Detail = '')
+    try {
+        $ts   = [DateTime]::Now.ToString('HH:mm:ss')
+        $line = if ($Detail) { "[$ts] $Event | $Detail" } else { "[$ts] $Event" }
+        [System.IO.File]::AppendAllText($script:LogPath, ($line + [System.Environment]::NewLine), [System.Text.Encoding]::UTF8)
+    }
+    catch { }
 }
 
 # ---------------------------------------------------------------------------
@@ -899,12 +928,21 @@ function Drain-MemoryQueue {
         $ramLabel.Text = "RAM livre: $freeGB GB / $totalGB GB total"
         if ($freeGB -lt 1.5) {
             $ramLabel.ForeColor = $script:ErrClr
+            if ($script:LastRamAlert -ne 'vermelho') {
+                $script:LastRamAlert = 'vermelho'
+                Write-Log 'ALERTA_RAM' "nivel=VERMELHO livre=$freeGB GB total=$totalGB GB"
+            }
         }
         elseif ($freeGB -lt 3.0) {
             $ramLabel.ForeColor = $script:WarnClr
+            if ($script:LastRamAlert -ne 'laranja') {
+                $script:LastRamAlert = 'laranja'
+                Write-Log 'ALERTA_RAM' "nivel=LARANJA livre=$freeGB GB total=$totalGB GB"
+            }
         }
         else {
             $ramLabel.ForeColor = $script:TextDim
+            $script:LastRamAlert = ''
         }
     }
     elseif ($last.type -eq 'err') {
@@ -1173,10 +1211,12 @@ $promptBox.Add_KeyDown({
 })
 
 $form.Add_FormClosing({
+    Write-Log 'FECHAMENTO' "uptime=$([math]::Round(([DateTime]::Now - [System.Diagnostics.Process]::GetCurrentProcess().StartTime).TotalMinutes, 1)) min"
     if ($script:StreamWorker) { Stop-StreamWorker }
     if ($script:MemMonitorWorker) { Stop-MemoryMonitor }
 })
 
+Write-Log 'INICIO' "versao=V2.8 ollama=$($script:OllamaBaseUrl)"
 Add-SysMessage 'Interface local iniciada. Comunicacao exclusiva com http://127.0.0.1:11434.' $script:Accent
 Add-SysMessage 'V2.8: cache de modelos 300 s + historico JSON + log de sessao. V2.7: painel RAM off-thread.' $script:TextDim
 Refresh-Models
