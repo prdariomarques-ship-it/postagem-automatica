@@ -8,6 +8,10 @@
     $script:ShowCache. Refresh-Models aceita -Force para re-fetch imediato.
     O botao "Atualizar modelos" sempre passa -Force. Ao renovar, invalida
     ShowCache e ModelCapabilities para evitar dados obsoletos.
+  - Frente E Parte 2: historico JSON (historico.json na pasta da app).
+    Cada troca grava dois objetos: {role:user} e {role:assistant} com
+    timestamp UTC, modelo, tokens, tok/s, load_s e total_s. Limite de
+    500 entradas com rotacao automatica. Erros de gravacao sao silenciosos.
 
   Novidades da V2.7:
   - Frente B: painel de RAM em tempo real (off-thread via Runspace + ConcurrentQueue).
@@ -78,6 +82,9 @@ $script:MemMonitorShared    = $null
 $script:ModelCacheTags = $null
 $script:ModelCacheTime = [DateTime]::MinValue
 $script:ShowCache      = @{}
+$script:HistoricoPath  = Join-Path $PSScriptRoot 'historico.json'
+$script:LastPrompt     = ''
+$script:ResponseBuffer = New-Object System.Text.StringBuilder
 
 # Contexto por sessão
 $env:OLLAMA_CONTEXT_LENGTH = '2048'
@@ -467,6 +474,8 @@ function Send-Prompt {
     $promptBox.Enabled          = $false
 
     $promptText = $prompt
+    $script:LastPrompt = $promptText
+    [void]$script:ResponseBuffer.Clear()
     $promptBox.Clear()
 
     $shared = New-Object 'System.Collections.Concurrent.ConcurrentDictionary[string,object]'
@@ -517,6 +526,7 @@ function Drain-TokenQueue {
                 $output.SelectionLength = 0
                 $output.SelectionColor  = $script:TextMain
                 $output.AppendText($item.text)
+                [void]$script:ResponseBuffer.Append($item.text)
                 $output.SelectionColor  = $output.ForeColor
                 $output.ScrollToCaret()
                 $script:TokenCount++
@@ -589,6 +599,7 @@ function Finish-LocalGeneration {
     if ($Success) {
         $output.AppendText("`r`n")
         Write-ChatSegment "  -- $($script:TokenCount) tokens --`r`n`r`n" $script:TextDim
+        Save-Historico -Prompt $script:LastPrompt -Response $script:ResponseBuffer.ToString() -Model $script:ActiveModel -Metrics $script:Metrics
         Show-Metrics
         Set-AppStatus 'Resposta concluida.'
     }
@@ -744,6 +755,61 @@ function Clear-AttachedImage {
     $script:AttachedImagePath = $null
     $imageLabel.Text      = ''
     $imageLabel.ForeColor = $script:TextDim
+}
+
+# ---------------------------------------------------------------------------
+# Histórico JSON (historico.json na pasta da app, max 500 entradas)
+# ---------------------------------------------------------------------------
+function Save-Historico {
+    param(
+        [string]$Prompt,
+        [string]$Response,
+        [string]$Model,
+        [hashtable]$Metrics
+    )
+    try {
+        $existing = @()
+        if ([System.IO.File]::Exists($script:HistoricoPath)) {
+            $raw = [System.IO.File]::ReadAllText($script:HistoricoPath, [System.Text.Encoding]::UTF8)
+            if ($raw.Trim().Length -gt 0) {
+                try { $existing = @($raw | ConvertFrom-Json) } catch { $existing = @() }
+            }
+        }
+
+        $now = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $m   = $Metrics
+
+        $toksSec = $null
+        $loadS   = $null
+        $totalS  = $null
+        if ($m) {
+            if ($m.eval_count -gt 0 -and $m.eval_duration -gt 0) {
+                $toksSec = [math]::Round($m.eval_count / ($m.eval_duration / 1000000000), 1)
+            }
+            if ($m.load_duration  -gt 0) { $loadS  = [math]::Round($m.load_duration  / 1000000000, 2) }
+            if ($m.total_duration -gt 0) { $totalS = [math]::Round($m.total_duration / 1000000000, 2) }
+        }
+
+        $hist = @() + $existing + @(
+            [ordered]@{ timestamp = $now; role = 'user';      content = $Prompt;   model = $Model },
+            [ordered]@{
+                timestamp    = $now
+                role         = 'assistant'
+                content      = $Response
+                model        = $Model
+                tokens       = if ($m -and $m.eval_count -gt 0) { $m.eval_count } else { $null }
+                toks_per_sec = $toksSec
+                load_s       = $loadS
+                total_s      = $totalS
+            }
+        )
+
+        if ($hist.Count -gt 500) { $hist = $hist[($hist.Count - 500)..($hist.Count - 1)] }
+
+        $json = ConvertTo-Json -InputObject $hist -Depth 5 -Compress
+        [System.IO.File]::WriteAllText($script:HistoricoPath, $json, [System.Text.Encoding]::UTF8)
+    }
+    catch { }
 }
 
 # ---------------------------------------------------------------------------
