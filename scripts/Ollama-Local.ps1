@@ -16,6 +16,10 @@
     Gatilhos: INICIO, ENVIO, SWAP_MODELO, RESPOSTA_OK, RESPOSTA_ERRO,
     CANCELADO, LIBERAR_VRAM, ALERTA_RAM (uma vez por transicao de nivel),
     FECHAMENTO. Todos silenciosos (catch vazio).
+  - Respostas sempre em portugues brasileiro: system prompt fixo injetado
+    em cada /api/generate ($script:SystemPrompt). Resolve respostas em
+    espanhol/ingles causadas pelo system prompt embutido de modelos
+    como phi4-mini:latest.
 
   Novidades da V2.7:
   - Frente B: painel de RAM em tempo real (off-thread via Runspace + ConcurrentQueue).
@@ -89,6 +93,8 @@ $script:ShowCache      = @{}
 $script:HistoricoPath  = Join-Path $PSScriptRoot 'historico.json'
 $script:LastPrompt     = ''
 $script:ResponseBuffer = New-Object System.Text.StringBuilder
+# System prompt fixo em portugues brasileiro — força qualquer modelo a responder em pt-BR
+$script:SystemPrompt  = 'Responda sempre em portugues brasileiro, de forma direta e objetiva. Use apenas portugues nas respostas. Se o usuario escrever em outro idioma, traduza e responda em portugues.'
 $script:LogPath        = Join-Path $PSScriptRoot ("sessao_" + [DateTime]::Now.ToString('yyyyMMdd-HHmmss') + ".log")
 $script:SendStartTime  = $null
 $script:LastRamAlert   = ''
@@ -326,7 +332,7 @@ function Start-StreamWorker {
         try {
             $uri     = "$baseUrl/api/generate"
             $options = if ($images) { @{ num_ctx = 2048; num_predict = 256 } } else { @{ num_ctx = 2048 } }
-            $body    = @{ model = $model; prompt = $prompt; stream = $true; options = $options }
+            $body    = @{ model = $model; prompt = $prompt; stream = $true; options = $options; system = $script:SystemPrompt }
             if ($images) { $body['images'] = $images }
             $payload = $body | ConvertTo-Json -Depth 6 -Compress
             $bytes   = [System.Text.Encoding]::UTF8.GetBytes($payload)
