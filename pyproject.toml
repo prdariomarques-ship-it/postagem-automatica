@@ -1,0 +1,33 @@
+[project]
+name = "postagem-automatica"
+version = "2.0.0"
+description = "Geração de conteúdo com IA (Claude) e publicação automática em Facebook e WhatsApp."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "anthropic>=0.40",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "twilio>=9.0",
+    "tenacity>=8.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+postagem-automatica = "postagem_automatica.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["postagem_automatica*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

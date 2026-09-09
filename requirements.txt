@@ -2,4 +2,4 @@ anthropic
 python-dotenv
 requests
 twilio
-schedule
+tenacity
